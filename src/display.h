@@ -24,3 +24,8 @@ void display_vline(int x, int y, int h, uint16_t color);
 
 // Blit a raw RGB565 bitmap (native endian) from SRAM/PSRAM.
 void display_blit(int x, int y, int w, int h, const uint16_t *pixels);
+
+// Blit a full-screen (SCREEN_W × SCREEN_H) framebuffer in one shot.
+// The fastest way to push a rendered frame — used by anything that
+// composes into an off-screen buffer (Talons uses this).
+void display_present_full(const uint16_t *pixels);

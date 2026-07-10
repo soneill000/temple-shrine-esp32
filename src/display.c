@@ -206,6 +206,12 @@ void display_vline(int x, int y, int h, uint16_t color)
 
 void display_frame_end(void) { /* live SPI on badge — nothing to flush */ }
 
+void display_present_full(const uint16_t *pixels)
+{
+    set_window(0, 0, SCREEN_W, SCREEN_H);
+    stream_bitmap(pixels, SCREEN_W * SCREEN_H);
+}
+
 void display_blit(int x, int y, int w, int h, const uint16_t *pixels)
 {
     if (w <= 0 || h <= 0) return;

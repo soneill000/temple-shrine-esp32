@@ -1,20 +1,17 @@
-// game_talons.c — Tier 2 Talons: flight over voxel terrain.
+// game_talons.c — Tier 2 Talons: voxel-terrain flight demo.
 //
-// Not Terry's original — his Talons is a 900-line polygon-3D flight sim
-// (heightfield tri strips, depth buffer, matrix math, fish sprites,
-// deployable talons). To make it fit in what our badge can actually
-// render in real time, we swap the polygon rasterizer for a Comanche-
-// style columnar voxel raycaster: 320 vertical scans per frame, each
-// walking outward from the camera and drawing a strip per depth step.
-//
-// The game feel and camera / control scheme match Terry's:
-//   UP / DOWN     pitch (climb / dive)
-//   LEFT / RIGHT  yaw (turn)
-//   A             boost dive
-//   BOOT          exit
-//
-// This is the "flight over terrain" milestone. Fish, catching talons,
-// and the scoring loop are stubs to be fleshed out on top.
+// v2 changes:
+//   1. Compose the frame in an off-screen RGB565 buffer, then push it
+//      to the panel in ONE SPI transaction. The v1 render fired ~1500
+//      tiny fill_rects per frame, each an SPI transaction whose overhead
+//      dominated the actual pixel push. Now the transactions are ~1.
+//   2. Direct RGB565 colors — not palette-indexed — with 8 height bands
+//      and 4 distance bands (32 total), so we can express water-shallow-
+//      grass-hills-rock-snow AND the atmospheric-perspective darkening
+//      Terry gets from his 8-bit palette. Distant land shifts toward a
+//      cold haze; near land stays vivid.
+//   3. Small text renderer that writes directly into the framebuffer so
+//      the HUD ships in the same present.
 
 #include "games.h"
 #include "shrine.h"
@@ -26,9 +23,22 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef ESP_PLATFORM
+  #include "esp_attr.h"
+  #define FB_ATTR EXT_RAM_BSS_ATTR   // parks framebuffer in PSRAM
+#else
+  #define FB_ATTR
+#endif
+
+// --- Framebuffer ---
+FB_ATTR static uint16_t s_fb[SCREEN_W * SCREEN_H];
+
+// Build an RGB565 word from 5/6/5-bit channels.
+#define RGB(r5, g6, b5) (uint16_t)(((r5) << 11) | ((g6) << 5) | (b5))
+
 // --- Heightmap ---
-#define HM_SIZE     128            // power of 2 for cheap wrap-around
-#define HM_MASK     (HM_SIZE - 1)
+#define HM_SIZE   128
+#define HM_MASK   (HM_SIZE - 1)
 static uint8_t s_hm[HM_SIZE * HM_SIZE];
 
 static inline int hm_get(int wx, int wz)
@@ -36,31 +46,67 @@ static inline int hm_get(int wx, int wz)
     return s_hm[((wz & HM_MASK) << 7) | (wx & HM_MASK)];
 }
 
-// Terrain colors keyed by height band. Kept in the 16-color VGA palette
-// so nothing feels off-key against the rest of the shrine.
-static color_t terrain_color(int h)
+// --- Terrain LUT: [height_band][distance_band] ---
+// Height bands (H): 0 deep water, 1 shallows, 2 beach, 3 grass low,
+// 4 grass hi, 5 foothills, 6 rock, 7 snow.
+// Distance bands (D): 0 near (< 12), 1 mid (< 28), 2 far (< 55), 3 haze.
+// Distant bands drift toward a cold blue-gray to sell atmospheric
+// perspective without needing more than the 16-bit color word.
+static const uint16_t TERRAIN[8][4] = {
+    /* 0 deep water   */ { RGB( 2, 6,16), RGB( 2, 4,14), RGB( 3, 6,14), RGB( 6,10,14) },
+    /* 1 shallows     */ { RGB( 6,20,26), RGB( 5,16,22), RGB( 6,14,18), RGB( 8,14,16) },
+    /* 2 beach        */ { RGB(28,40,12), RGB(24,32,10), RGB(18,24,12), RGB(14,18,14) },
+    /* 3 grass low    */ { RGB( 6,44, 4), RGB( 5,36, 4), RGB( 7,26, 6), RGB(10,20,12) },
+    /* 4 grass hi     */ { RGB(14,52, 8), RGB(11,42, 6), RGB(10,30,10), RGB(12,22,14) },
+    /* 5 foothills    */ { RGB(20,28, 8), RGB(16,22, 8), RGB(14,20,10), RGB(13,18,14) },
+    /* 6 rock         */ { RGB(20,20,16), RGB(16,16,14), RGB(14,16,16), RGB(14,18,20) },
+    /* 7 snow         */ { RGB(30,60,30), RGB(26,52,26), RGB(22,44,24), RGB(18,32,24) },
+};
+
+static inline int height_band(int h)
 {
-    if (h < 40)  return C_BLUE;      // water (matches BG)
-    if (h < 55)  return C_LTBLUE;    // shallows
-    if (h < 65)  return C_BROWN;     // beach
-    if (h < 110) return C_GREEN;     // grass
-    if (h < 150) return C_LTGREEN;   // hills lit
-    if (h < 190) return C_BROWN;     // rock
-    return C_WHITE;                  // snow
+    if (h <  40) return 0;
+    if (h <  55) return 1;
+    if (h <  65) return 2;
+    if (h <  90) return 3;
+    if (h < 120) return 4;
+    if (h < 150) return 5;
+    if (h < 195) return 6;
+    return 7;
 }
 
+static inline int dist_band(float z)
+{
+    if (z < 12.0f) return 0;
+    if (z < 28.0f) return 1;
+    if (z < 55.0f) return 2;
+    return 3;
+}
+
+// Sky gradient — top of screen dark, near-horizon washed lighter.
+static uint16_t sky_color(int y, int horizon)
+{
+    if (horizon <= 0) return RGB(6, 10, 16);
+    // 0 at very top → 1.0 at horizon
+    float t = (float)y / (float)horizon;
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    int r = (int)( 3 + 12 * t);
+    int g = (int)( 6 + 20 * t);
+    int b = (int)(14 + 12 * t);
+    if (r > 31) r = 31; if (g > 63) g = 63; if (b > 31) b = 31;
+    return RGB(r, g, b);
+}
+
+// --- Heightmap generation ---
 static void gen_heightmap(void)
 {
-    // Sum-of-sines terrain: cheap, deterministic, gives believable hills
-    // + lakes without needing Perlin noise or diamond-square. Two long
-    // waves lay down the continental shape, two short ones add ripples.
     for (int z = 0; z < HM_SIZE; z++) {
         for (int x = 0; x < HM_SIZE; x++) {
             float fx = x, fz = z;
-            float h = 90.0f;
-            h += 55.0f * sinf(fx * 0.09f) * cosf(fz * 0.11f);
-            h += 35.0f * sinf((fx + fz) * 0.17f);
-            h += 15.0f * sinf(fx * 0.35f + fz * 0.29f);
+            float h = 92.0f;
+            h += 60.0f * sinf(fx * 0.09f) * cosf(fz * 0.11f);
+            h += 32.0f * sinf((fx + fz) * 0.17f);
+            h += 16.0f * sinf(fx * 0.35f + fz * 0.29f);
             h +=  8.0f * cosf(fx * 0.7f);
             if (h < 0)   h = 0;
             if (h > 255) h = 255;
@@ -69,71 +115,114 @@ static void gen_heightmap(void)
     }
 }
 
-// --- Camera ---
-static float s_cx, s_cy, s_cz;        // world position
+// --- Framebuffer helpers ---
+
+static inline void fb_pixel(int x, int y, uint16_t c)
+{
+    if ((unsigned)x < SCREEN_W && (unsigned)y < SCREEN_H)
+        s_fb[y * SCREEN_W + x] = c;
+}
+
+static inline void fb_vline(int x, int y, int h, uint16_t c)
+{
+    if ((unsigned)x >= SCREEN_W) return;
+    if (y < 0) { h += y; y = 0; }
+    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    uint16_t *p = &s_fb[y * SCREEN_W + x];
+    for (int i = 0; i < h; i++) { *p = c; p += SCREEN_W; }
+}
+
+static inline void fb_hline(int x, int y, int w, uint16_t c)
+{
+    if ((unsigned)y >= SCREEN_H) return;
+    if (x < 0) { w += x; x = 0; }
+    if (x + w > SCREEN_W) w = SCREEN_W - x;
+    uint16_t *p = &s_fb[y * SCREEN_W + x];
+    for (int i = 0; i < w; i++) p[i] = c;
+}
+
+static void fb_putc(int px, int py, char ch, uint16_t fg, uint16_t bg)
+{
+    if (ch < 0 || ch >= 128) ch = ' ';
+    const uint8_t *g = FONT8X8[(uint8_t)ch];
+    for (int r = 0; r < 8; r++) {
+        uint8_t bits = g[r];
+        for (int col = 0; col < 8; col++) {
+            int x = px + col, y = py + r;
+            if ((unsigned)x < SCREEN_W && (unsigned)y < SCREEN_H)
+                s_fb[y * SCREEN_W + x] = (bits & (1 << col)) ? fg : bg;
+        }
+    }
+}
+
+static void fb_puts(int px, int py, const char *s, uint16_t fg, uint16_t bg)
+{
+    while (*s) { fb_putc(px, py, *s++, fg, bg); px += 8; }
+}
+
+// --- Camera / flight ---
+static float s_cx, s_cy, s_cz;
 static float s_yaw, s_pitch;
 static float s_speed;
-static float s_yaw_rate, s_pitch_rate; // stick-style continuous inputs
+static float s_yaw_rate, s_pitch_rate;
 
-#define FLY_SPEED       24.0f
-#define BOOST_SPEED     40.0f
-#define TURN_RATE       1.2f           // radians / sec
-#define PITCH_RATE      0.8f
-#define GROUND_MARGIN   14.0f
+#define FLY_SPEED     22.0f
+#define BOOST_SPEED   38.0f
+#define TURN_RATE     1.2f
+#define PITCH_RATE    0.8f
+#define GROUND_MARGIN 14.0f
 
 static void reset_camera(void)
 {
     s_cx = HM_SIZE / 2;
     s_cz = HM_SIZE / 2;
-    s_cy = 180.0f;
-    s_yaw   = 0.0f;
+    s_cy = 190.0f;
+    s_yaw = 0.0f;
     s_pitch = 0.0f;
     s_speed = FLY_SPEED;
     s_yaw_rate = s_pitch_rate = 0;
 }
 
 // --- Voxel renderer ---
-// FOV = 60°. Precompute the horizontal tan for each column into a small
-// LUT so the inner loop stays fp-cheap.
-#define FOV_HALF   0.523f              // ~30° each side
+#define FOV_HALF   0.523f
 #define NEAR_Z     1.0f
-#define FAR_Z      80.0f
-#define HORIZON_PX 120                  // resting horizon y on screen
-static float s_col_tan[SCREEN_W];
+#define FAR_Z      70.0f
+#define BASE_HORIZON  120
 
+static float s_col_tan[SCREEN_W];
 static void build_col_tan(void)
 {
     for (int x = 0; x < SCREEN_W; x++) {
-        float u = ((float)x / (SCREEN_W - 1)) * 2.0f - 1.0f;   // -1..+1
+        float u = ((float)x / (SCREEN_W - 1)) * 2.0f - 1.0f;
         s_col_tan[x] = u * tanf(FOV_HALF);
     }
 }
 
-// Draw one frame: sky, terrain (via 320 columns of vertical strips), and
-// a very thin HUD overlay left over from the previous frame is repainted
-// by the caller.
 static void render_frame(void)
 {
-    // Sky — flat blue block above the horizon line (moves with pitch).
-    int horizon = HORIZON_PX + (int)(s_pitch * 240.0f);
+    int horizon = BASE_HORIZON + (int)(s_pitch * 240.0f);
     if (horizon < 0)   horizon = 0;
     if (horizon > SCREEN_H) horizon = SCREEN_H;
-    shrine_fill_rect(0, 0, SCREEN_W, horizon, C_DKGRAY);       // sky
-    shrine_fill_rect(0, horizon - 1, SCREEN_W, 2, C_LTGRAY);   // horizon band
 
-    // Terrain columns.
+    // Sky gradient — one hline per row is fast in memory.
+    for (int y = 0; y < horizon; y++)
+        fb_hline(0, y, SCREEN_W, sky_color(y, horizon));
+
+    // Prepare the below-horizon region: fill with a haze color so gaps
+    // don't show through as garbage from the previous frame.
+    uint16_t haze = TERRAIN[3][3];
+    for (int y = horizon; y < SCREEN_H; y++)
+        fb_hline(0, y, SCREEN_W, haze);
+
     float cos_y = cosf(s_yaw), sin_y = sinf(s_yaw);
     for (int x = 0; x < SCREEN_W; x++) {
-        // Ray direction in world XZ plane.
         float ct = s_col_tan[x];
         float rx = ct * cos_y + sin_y;
         float rz = -ct * sin_y + cos_y;
-        // Normalize so distance == world units traveled.
         float rlen = sqrtf(rx * rx + rz * rz);
         rx /= rlen; rz /= rlen;
 
         int ymax = SCREEN_H;
-        // March outward with growing step (more detail near, coarser far).
         float z = NEAR_Z;
         float dz = 0.5f;
         while (z < FAR_Z && ymax > horizon) {
@@ -141,89 +230,86 @@ static void render_frame(void)
             float wz = s_cz + rz * z;
             int h = hm_get((int)wx, (int)wz);
             float dy = (float)h - s_cy;
-            // Perspective: y_on_screen = horizon - dy / z * K
             int screen_y = horizon - (int)(dy / z * 100.0f);
             if (screen_y < ymax) {
                 if (screen_y < horizon) screen_y = horizon;
-                color_t c = terrain_color(h);
-                shrine_vline(x, screen_y, ymax - screen_y, c);
+                uint16_t c = TERRAIN[height_band(h)][dist_band(z)];
+                fb_vline(x, screen_y, ymax - screen_y, c);
                 ymax = screen_y;
             }
             z  += dz;
-            dz += 0.02f;   // grow step
+            dz += 0.02f;
         }
     }
 }
 
 // --- HUD ---
+static const uint16_t HUD_BG = RGB(2, 4, 6);   // near-black
+static const uint16_t HUD_FG = RGB(31, 60, 8); // amber-yellow
+static const uint16_t HUD_ACC = RGB(28, 40, 30);
+static const uint16_t HUD_HIGHLIGHT = RGB(31, 40, 31);
+
 static void render_hud(uint32_t t_ms)
 {
+    // Top strip
+    for (int y = 0; y < 16; y++) fb_hline(0, y, SCREEN_W, HUD_BG);
+    // Bottom strip
+    for (int y = SCREEN_H - 10; y < SCREEN_H; y++) fb_hline(0, y, SCREEN_W, HUD_BG);
+
     char buf[24];
-    // Left: heading (compass degrees) + altitude.
-    int heading = (int)((s_yaw * 180.0f / 3.14159f) + 360) % 360;
-    int altitude = (int)s_cy;
-    snprintf(buf, sizeof(buf), "HDG %03d", heading);
-    shrine_puts(0, 0, buf, C_YELLOW, C_DKGRAY);
-    snprintf(buf, sizeof(buf), "ALT %03d", altitude);
-    shrine_puts(0, 1, buf, C_YELLOW, C_DKGRAY);
-
-    // Right: pitch indicator + speed.
+    int heading = ((int)(s_yaw * 180.0f / 3.14159f) % 360 + 360) % 360;
     int pitch_deg = (int)(s_pitch * 180.0f / 3.14159f);
+
+    snprintf(buf, sizeof(buf), "HDG %03d", heading);
+    fb_puts(2, 0, buf, HUD_FG, HUD_BG);
+    snprintf(buf, sizeof(buf), "ALT %03d", (int)s_cy);
+    fb_puts(2, 8, buf, HUD_FG, HUD_BG);
     snprintf(buf, sizeof(buf), "PIT %+03d", pitch_deg);
-    shrine_puts(TEXT_COLS - 8, 0, buf, C_YELLOW, C_DKGRAY);
+    fb_puts(SCREEN_W - 8 * 8, 0, buf, HUD_FG, HUD_BG);
     snprintf(buf, sizeof(buf), "SPD %03d", (int)s_speed);
-    shrine_puts(TEXT_COLS - 8, 1, buf, C_YELLOW, C_DKGRAY);
+    fb_puts(SCREEN_W - 8 * 8, 8, buf, HUD_FG, HUD_BG);
 
-    // Center: cross-hair and small pitch ladder.
+    // Blinking title in the middle-top.
+    const char *title = "* TALONS *";
+    int title_w = 10 * 8;
+    uint16_t tcol = ((t_ms / 500) & 1) ? HUD_HIGHLIGHT : HUD_ACC;
+    fb_puts((SCREEN_W - title_w) / 2, 0, title, tcol, HUD_BG);
+
+    // Crosshair.
     int cx = SCREEN_W / 2, cy = SCREEN_H / 2;
-    shrine_hline(cx - 6, cy, 4, C_YELLOW);
-    shrine_hline(cx + 3, cy, 4, C_YELLOW);
-    shrine_vline(cx, cy - 4, 3, C_YELLOW);
-    shrine_vline(cx, cy + 2, 3, C_YELLOW);
+    fb_hline(cx - 6, cy, 4, HUD_FG);
+    fb_hline(cx + 3, cy, 4, HUD_FG);
+    fb_vline(cx, cy - 4, 3, HUD_FG);
+    fb_vline(cx, cy + 2, 3, HUD_FG);
 
-    // Blinking star at top-center to prove tick freshness.
-    if ((t_ms / 500) & 1) shrine_puts(TEXT_COLS / 2 - 3, 0, "TALONS",
-                                       C_LTMAGENTA, C_DKGRAY);
-    else                  shrine_puts(TEXT_COLS / 2 - 3, 0, "TALONS",
-                                       C_LTCYAN, C_DKGRAY);
-
-    // Bottom: control hint.
-    shrine_fill_rect(0, TEXT_ROWS - 1, SCREEN_W, GLYPH_H, PAL_RGB565[C_BLACK]);
-    shrine_puts(0, TEXT_ROWS - 1,
-                "ARROWS FLY   A DIVE   BOOT EXIT",
-                C_LTGRAY, C_BLACK);
+    // Control hint.
+    fb_puts(2, SCREEN_H - 8, "ARROWS FLY  A DIVE  BOOT EXIT",
+            HUD_ACC, HUD_BG);
 }
 
 // --- Update ---
 static void update_camera(float dt, bool boost)
 {
-    // Apply stick rates.
     s_yaw   += s_yaw_rate   * dt;
     s_pitch += s_pitch_rate * dt;
-    // Damp/return-to-center so the plane self-levels a bit.
     s_yaw_rate   *= 0.90f;
     s_pitch_rate *= 0.92f;
-    // Clamp pitch to avoid gimbal-adjacent weirdness.
-    if (s_pitch > 0.7f)  s_pitch = 0.7f;
+    if (s_pitch >  0.7f) s_pitch =  0.7f;
     if (s_pitch < -0.7f) s_pitch = -0.7f;
-    // Wrap yaw.
-    if (s_yaw > 6.2832f)  s_yaw -= 6.2832f;
+    if (s_yaw >  6.2832f) s_yaw -= 6.2832f;
     if (s_yaw < -6.2832f) s_yaw += 6.2832f;
 
-    // Target speed.
     float target = boost ? BOOST_SPEED : FLY_SPEED;
     s_speed += (target - s_speed) * dt * 3.0f;
 
-    // Forward motion in world XZ, and vertical motion from pitch.
     s_cx += sinf(s_yaw) * cosf(s_pitch) * s_speed * dt;
     s_cz += cosf(s_yaw) * cosf(s_pitch) * s_speed * dt;
     s_cy -= sinf(s_pitch) * s_speed * dt;
 
-    // Ground safety: don't sink below the terrain.
     int h_below = hm_get((int)s_cx, (int)s_cz);
     if (s_cy < (float)h_below + GROUND_MARGIN)
         s_cy = (float)h_below + GROUND_MARGIN;
-    if (s_cy > 245.0f) s_cy = 245.0f;
+    if (s_cy > 250.0f) s_cy = 250.0f;
 }
 
 void game_talons_run(void)
@@ -231,14 +317,12 @@ void game_talons_run(void)
     gen_heightmap();
     build_col_tan();
     reset_camera();
-    shrine_clear(C_BLACK);
 
     uint32_t last = shrine_ms();
     while (1) {
         shrine_input_scan();
         if (shrine_should_quit()) return;
 
-        // Continuous input into "stick rates" so control feels smooth.
         if (shrine_key_held(BTN_LEFT))  s_yaw_rate   -= TURN_RATE  * 0.20f;
         if (shrine_key_held(BTN_RIGHT)) s_yaw_rate   += TURN_RATE  * 0.20f;
         if (shrine_key_held(BTN_UP))    s_pitch_rate -= PITCH_RATE * 0.20f;
@@ -254,6 +338,8 @@ void game_talons_run(void)
         render_frame();
         render_hud(now);
 
-        shrine_sleep_ms(15);
+        display_present_full(s_fb);
+
+        // No shrine_sleep_ms — the SPI push is the natural frame gate.
     }
 }

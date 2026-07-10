@@ -109,3 +109,9 @@ void display_frame_end(void)
     SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
     SDL_RenderPresent(s_ren);
 }
+
+void display_present_full(const uint16_t *pixels)
+{
+    memcpy(s_fb, pixels, sizeof(s_fb));
+    display_frame_end();
+}
