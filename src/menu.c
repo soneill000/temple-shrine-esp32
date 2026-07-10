@@ -19,14 +19,15 @@ typedef struct {
 } menu_entry_t;
 
 static const menu_entry_t ENTRIES[] = {
-    { "ORACLE",    "SPEAK TO THE RNG",      game_oracle_run    },
-    { "CHRONICLE", "READ THE SCROLLS",      game_chronicle_run },
-    { "HYMN",      "SING PRAISES",          game_hymn_run      },
-    { "WHAP",      "SMITE THE DEMONS",      game_whap_run      },
-    { "FLAPBAT",   "FLAP INTO ETERNITY",    game_flapbat_run   },
-    { "SLIDER",    "SLIDING TILE PUZZLE",   game_slider_run    },
-    { "TICTACTOE", "BATTLE THE FALLEN",     game_tictactoe_run },
-    { "TALONS",    "DIVE BOMBER (BRUTAL)",  game_talons_run    },
+    { "ORACLE",     "SPEAK TO THE RNG",     game_oracle_run     },
+    { "CHRONICLE",  "READ THE SCROLLS",     game_chronicle_run  },
+    { "HYMN",       "SING PRAISES",         game_hymn_run       },
+    { "DIGITS",     "MEMORY  (TERRY PORT)", game_digits_run     },
+    { "BOMBERGOLF", "BOMB RUN (TERRY PORT)",game_bombergolf_run },
+    { "WHAP",       "SMITE THE DEMONS",     game_whap_run       },
+    { "FLAPBAT",    "FLAP INTO ETERNITY",   game_flapbat_run    },
+    { "SLIDER",     "SLIDING TILES",        game_slider_run     },
+    { "TICTACTOE",  "BATTLE THE FALLEN",    game_tictactoe_run  },
 };
 #define N_ENTRIES (int)(sizeof(ENTRIES)/sizeof(ENTRIES[0]))
 
