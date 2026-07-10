@@ -67,3 +67,55 @@ static const note_t HYMN_NEARER_MY_GOD[] = {
     {N_F4, Q_}, {N_G4, HD_},
     {0, H_},
 };
+
+// "Holy Holy Holy" (1826, tune "Nicaea" by John Dykes 1861).
+static const note_t HYMN_HOLY_HOLY[] = {
+    {N_D4, Q_}, {N_D4, Q_}, {N_A4, Q_}, {N_A4, Q_},
+    {N_B4, Q_}, {N_C5, Q_}, {N_A4, H_},
+    {N_G4, Q_}, {N_G4, Q_}, {N_F4, Q_}, {N_E4, Q_},
+    {N_D4, HD_},
+    {N_D4, Q_}, {N_D4, Q_}, {N_A4, Q_}, {N_A4, Q_},
+    {N_C5, Q_}, {N_C5, Q_}, {N_B4, H_},
+    {N_A4, Q_}, {N_G4, Q_}, {N_F4, Q_}, {N_G4, Q_},
+    {N_A4, HD_},
+    {0, H_},
+};
+
+// "Rock of Ages" (1763, tune "Toplady" by Thomas Hastings 1830).
+static const note_t HYMN_ROCK_OF_AGES[] = {
+    {N_G4, Q_}, {N_G4, Q_}, {N_G4, Q_}, {N_A4, Q_},
+    {N_B4, H_},
+    {N_A4, Q_}, {N_G4, Q_}, {N_A4, Q_}, {N_B4, Q_},
+    {N_C5, HD_},
+    {N_B4, Q_}, {N_A4, Q_}, {N_G4, Q_}, {N_A4, Q_},
+    {N_B4, H_},
+    {N_A4, Q_}, {N_G4, Q_}, {N_F4, Q_}, {N_E4, Q_},
+    {N_D4, HD_},
+    {0, H_},
+};
+
+// "Come Thou Fount" (1758, tune "Nettleton" 1813).
+static const note_t HYMN_COME_THOU_FOUNT[] = {
+    {N_C5, Q_}, {N_A4, Q_}, {N_G4, Q_}, {N_A4, Q_},
+    {N_G4, Q_}, {N_F4, Q_}, {N_E4, H_},
+    {N_G4, Q_}, {N_F4, Q_}, {N_E4, Q_}, {N_F4, Q_},
+    {N_G4, HD_},
+    {N_C5, Q_}, {N_A4, Q_}, {N_G4, Q_}, {N_A4, Q_},
+    {N_G4, Q_}, {N_F4, Q_}, {N_E4, H_},
+    {N_D4, Q_}, {N_E4, Q_}, {N_G4, Q_}, {N_G4, Q_},
+    {N_C4, HD_},
+    {0, H_},
+};
+
+// "How Great Thou Art" (1885, Swedish tune "O Store Gud") — opening.
+static const note_t HYMN_HOW_GREAT[] = {
+    {N_G4, Q_}, {N_G4, E_}, {N_A4, E_}, {N_G4, Q_}, {N_E4, Q_},
+    {N_G4, H_},
+    {N_F4, Q_}, {N_A4, Q_}, {N_G4, Q_}, {N_F4, Q_},
+    {N_E4, HD_},
+    {N_E4, Q_}, {N_E4, E_}, {N_F4, E_}, {N_E4, Q_}, {N_D4, Q_},
+    {N_E4, H_},
+    {N_D4, Q_}, {N_G4, Q_}, {N_F4, Q_}, {N_E4, Q_},
+    {N_D4, HD_},
+    {0, H_},
+};

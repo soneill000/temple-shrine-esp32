@@ -6,6 +6,7 @@
 
 void game_oracle_run(void);
 void game_hymn_run(void);
+void game_chronicle_run(void);
 void game_tictactoe_run(void);
 void game_slider_run(void);
 void game_flapbat_run(void);

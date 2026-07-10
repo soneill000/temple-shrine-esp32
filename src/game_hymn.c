@@ -29,6 +29,18 @@ static const hymn_t HYMNS[] = {
     { "NEARER MY GOD",     "SARAH F. ADAMS (1856)",
       HYMN_NEARER_MY_GOD,
       sizeof(HYMN_NEARER_MY_GOD)/sizeof(HYMN_NEARER_MY_GOD[0]) },
+    { "HOLY HOLY HOLY",    "R. HEBER / J. DYKES (1861)",
+      HYMN_HOLY_HOLY,
+      sizeof(HYMN_HOLY_HOLY)/sizeof(HYMN_HOLY_HOLY[0]) },
+    { "ROCK OF AGES",      "A. TOPLADY (1763)",
+      HYMN_ROCK_OF_AGES,
+      sizeof(HYMN_ROCK_OF_AGES)/sizeof(HYMN_ROCK_OF_AGES[0]) },
+    { "COME THOU FOUNT",   "R. ROBINSON (1758)",
+      HYMN_COME_THOU_FOUNT,
+      sizeof(HYMN_COME_THOU_FOUNT)/sizeof(HYMN_COME_THOU_FOUNT[0]) },
+    { "HOW GREAT THOU ART","C. BOBERG (1885)",
+      HYMN_HOW_GREAT,
+      sizeof(HYMN_HOW_GREAT)/sizeof(HYMN_HOW_GREAT[0]) },
 };
 #define N_HYMNS (int)(sizeof(HYMNS)/sizeof(HYMNS[0]))
 
@@ -55,7 +67,7 @@ static void draw_now_playing(void)
 
     shrine_puts_centered(6, "NOW OPEN TO HYMN", C_LTCYAN, C_BG);
 
-    char n[8];
+    char n[24];
     snprintf(n, sizeof(n), "%d / %d", s_sel + 1, N_HYMNS);
     shrine_puts_centered(8, n, C_LTGREEN, C_BG);
 

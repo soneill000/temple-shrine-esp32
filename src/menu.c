@@ -20,12 +20,13 @@ typedef struct {
 
 static const menu_entry_t ENTRIES[] = {
     { "ORACLE",    "SPEAK TO THE RNG",      game_oracle_run    },
+    { "CHRONICLE", "READ THE SCROLLS",      game_chronicle_run },
+    { "HYMN",      "SING PRAISES",          game_hymn_run      },
     { "WHAP",      "SMITE THE DEMONS",      game_whap_run      },
-    { "SLIDER",    "SLIDING TILE PUZZLE",   game_slider_run    },
     { "FLAPBAT",   "FLAP INTO ETERNITY",    game_flapbat_run   },
+    { "SLIDER",    "SLIDING TILE PUZZLE",   game_slider_run    },
     { "TICTACTOE", "BATTLE THE FALLEN",     game_tictactoe_run },
     { "TALONS",    "DIVE BOMBER (BRUTAL)",  game_talons_run    },
-    { "HYMN",      "SING PRAISES",          game_hymn_run      },
 };
 #define N_ENTRIES (int)(sizeof(ENTRIES)/sizeof(ENTRIES[0]))
 

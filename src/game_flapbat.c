@@ -202,6 +202,6 @@ void game_flapbat_run(void)
             }
         }
 
-        shrine_sleep_ms(50);   // ~20 fps
+        shrine_sleep_ms(30);   // ~33 fps
     }
 }
