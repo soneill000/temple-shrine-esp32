@@ -18,6 +18,7 @@
 #include "hw.h"
 #include "palette.h"
 #include "font8x8.h"
+#include "display.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -49,18 +50,19 @@ static inline int hm_get(int wx, int wz)
 // --- Terrain LUT: [height_band][distance_band] ---
 // Height bands (H): 0 deep water, 1 shallows, 2 beach, 3 grass low,
 // 4 grass hi, 5 foothills, 6 rock, 7 snow.
-// Distance bands (D): 0 near (< 12), 1 mid (< 28), 2 far (< 55), 3 haze.
-// Distant bands drift toward a cold blue-gray to sell atmospheric
-// perspective without needing more than the 16-bit color word.
+// Distance bands (D): 0 near, 1 mid, 2 far, 3 farthest — each column
+// keeps its family (blues stay blue, greens stay green, etc.) and just
+// dims. Previous version pulled everything toward a cold blue-gray at
+// distance, which made mountains and sky and water all read the same.
 static const uint16_t TERRAIN[8][4] = {
-    /* 0 deep water   */ { RGB( 2, 6,16), RGB( 2, 4,14), RGB( 3, 6,14), RGB( 6,10,14) },
-    /* 1 shallows     */ { RGB( 6,20,26), RGB( 5,16,22), RGB( 6,14,18), RGB( 8,14,16) },
-    /* 2 beach        */ { RGB(28,40,12), RGB(24,32,10), RGB(18,24,12), RGB(14,18,14) },
-    /* 3 grass low    */ { RGB( 6,44, 4), RGB( 5,36, 4), RGB( 7,26, 6), RGB(10,20,12) },
-    /* 4 grass hi     */ { RGB(14,52, 8), RGB(11,42, 6), RGB(10,30,10), RGB(12,22,14) },
-    /* 5 foothills    */ { RGB(20,28, 8), RGB(16,22, 8), RGB(14,20,10), RGB(13,18,14) },
-    /* 6 rock         */ { RGB(20,20,16), RGB(16,16,14), RGB(14,16,16), RGB(14,18,20) },
-    /* 7 snow         */ { RGB(30,60,30), RGB(26,52,26), RGB(22,44,24), RGB(18,32,24) },
+    /* 0 deep water   */ { RGB( 3,10,22), RGB( 3, 8,19), RGB( 3, 7,16), RGB( 3, 6,14) },
+    /* 1 shallows     */ { RGB( 8,36,26), RGB( 7,30,22), RGB( 6,24,20), RGB( 5,18,18) },
+    /* 2 beach        */ { RGB(30,44,14), RGB(26,38,12), RGB(22,32,12), RGB(18,26,12) },
+    /* 3 grass low    */ { RGB( 8,48, 4), RGB( 6,40, 4), RGB( 5,32, 4), RGB( 5,26, 6) },
+    /* 4 grass hi     */ { RGB(16,54,10), RGB(13,46, 8), RGB(11,38, 8), RGB(10,30, 8) },
+    /* 5 foothills    */ { RGB(22,32,10), RGB(19,26, 8), RGB(16,22, 8), RGB(13,18, 8) },
+    /* 6 rock         */ { RGB(22,22,16), RGB(18,18,14), RGB(15,15,12), RGB(12,12,10) },
+    /* 7 snow         */ { RGB(31,62,30), RGB(28,55,28), RGB(24,48,24), RGB(20,40,20) },
 };
 
 static inline int height_band(int h)
@@ -83,17 +85,21 @@ static inline int dist_band(float z)
     return 3;
 }
 
-// Sky gradient — top of screen dark, near-horizon washed lighter.
+// Sky gradient — warmer palette (dawn / haze) so it contrasts against
+// terrain instead of matching the water and distant mountains. Top is a
+// bruise-purple; the horizon washes toward a pale peach.
 static uint16_t sky_color(int y, int horizon)
 {
-    if (horizon <= 0) return RGB(6, 10, 16);
-    // 0 at very top → 1.0 at horizon
+    if (horizon <= 0) return RGB(4, 4, 6);
     float t = (float)y / (float)horizon;
-    if (t < 0) t = 0; if (t > 1) t = 1;
-    int r = (int)( 3 + 12 * t);
-    int g = (int)( 6 + 20 * t);
-    int b = (int)(14 + 12 * t);
-    if (r > 31) r = 31; if (g > 63) g = 63; if (b > 31) b = 31;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    int r = (int)( 6 + 24 * t);   // purple-red -> peach
+    int g = (int)( 8 + 30 * t);   // dark -> light
+    int b = (int)(12 + 10 * t);   // stays modest so it doesn't read as water
+    if (r > 31) r = 31;
+    if (g > 63) g = 63;
+    if (b > 31) b = 31;
     return RGB(r, g, b);
 }
 
@@ -143,8 +149,9 @@ static inline void fb_hline(int x, int y, int w, uint16_t c)
 
 static void fb_putc(int px, int py, char ch, uint16_t fg, uint16_t bg)
 {
-    if (ch < 0 || ch >= 128) ch = ' ';
-    const uint8_t *g = FONT8X8[(uint8_t)ch];
+    uint8_t c = (uint8_t)ch;
+    if (c >= 128) c = ' ';
+    const uint8_t *g = FONT8X8[c];
     for (int r = 0; r < 8; r++) {
         uint8_t bits = g[r];
         for (int col = 0; col < 8; col++) {
@@ -158,6 +165,33 @@ static void fb_putc(int px, int py, char ch, uint16_t fg, uint16_t bg)
 static void fb_puts(int px, int py, const char *s, uint16_t fg, uint16_t bg)
 {
     while (*s) { fb_putc(px, py, *s++, fg, bg); px += 8; }
+}
+
+// --- Fish sprites ---
+#define N_FISH  16
+#define FISH_Y  40.0f    // world y of water surface
+typedef struct { float x, z; bool caught; } fish_t;
+static fish_t s_fish[N_FISH];
+
+static void place_fish(void)
+{
+    int placed = 0;
+    for (int attempt = 0; placed < N_FISH && attempt < 400; attempt++) {
+        int wx = (int)shrine_god(HM_SIZE);
+        int wz = (int)shrine_god(HM_SIZE);
+        if (s_hm[wz * HM_SIZE + wx] < 40) {
+            s_fish[placed].x = (float)wx + 0.5f;
+            s_fish[placed].z = (float)wz + 0.5f;
+            s_fish[placed].caught = false;
+            placed++;
+        }
+    }
+    while (placed < N_FISH) {
+        s_fish[placed].x = HM_SIZE / 2 + (float)((int)shrine_god(20) - 10);
+        s_fish[placed].z = HM_SIZE / 2 + (float)((int)shrine_god(20) - 10);
+        s_fish[placed].caught = false;
+        placed++;
+    }
 }
 
 // --- Camera / flight ---
@@ -181,12 +215,14 @@ static void reset_camera(void)
     s_pitch = 0.0f;
     s_speed = FLY_SPEED;
     s_yaw_rate = s_pitch_rate = 0;
+    s_caught = 0;
+    for (int i = 0; i < N_FISH; i++) s_fish[i].caught = false;
 }
 
 // --- Voxel renderer ---
 #define FOV_HALF   0.523f
 #define NEAR_Z     1.0f
-#define FAR_Z      70.0f
+#define FAR_Z      140.0f          // further horizon — grow step keeps cost flat
 #define BASE_HORIZON  120
 
 static float s_col_tan[SCREEN_W];
@@ -195,6 +231,57 @@ static void build_col_tan(void)
     for (int x = 0; x < SCREEN_W; x++) {
         float u = ((float)x / (SCREEN_W - 1)) * 2.0f - 1.0f;
         s_col_tan[x] = u * tanf(FOV_HALF);
+    }
+}
+
+// Per-column topmost drawn terrain y (for coarse sprite occlusion).
+static int s_col_top[SCREEN_W];
+
+// Render fish as scaled billboards after terrain, before HUD.
+static int s_caught;
+static void render_fish(int horizon)
+{
+    float cy_ = cosf(s_yaw), sy_ = sinf(s_yaw);
+    float half_tan = tanf(FOV_HALF);
+    for (int i = 0; i < N_FISH; i++) {
+        if (s_fish[i].caught) continue;
+        float dx = s_fish[i].x - s_cx;
+        float dz = s_fish[i].z - s_cz;
+        float cam_x =  dx * cy_ + dz * sy_;
+        float cam_z = -dx * sy_ + dz * cy_;
+        if (cam_z < 1.0f) continue;
+        float tan_u = cam_x / cam_z;
+        if (tan_u < -half_tan * 1.2f || tan_u > half_tan * 1.2f) continue;
+        int sx = (int)((tan_u / half_tan + 1.0f) * (SCREEN_W - 1) / 2);
+        float dy = FISH_Y - s_cy;
+        int sy = horizon - (int)(dy / cam_z * 100.0f);
+        int size = (int)(70.0f / cam_z);
+        if (size < 2)  size = 2;
+        if (size > 12) size = 12;
+        // Coarse occlusion — if the whole sprite is above the terrain
+        // silhouette at that column, don't draw.
+        if (sx >= 0 && sx < SCREEN_W && sy + size < s_col_top[sx]) continue;
+
+        // Fish body — ellipse; tail slightly darker; eye a bright dot.
+        uint16_t body = RGB(30, 44, 6);
+        uint16_t tail = RGB(24, 28, 4);
+        uint16_t eye  = RGB(31, 62, 31);
+        for (int py = -size / 2; py <= size / 2; py++) {
+            for (int px = -size; px <= size; px++) {
+                if (px * px * 4 + py * py * 16 > size * size * 4) continue;
+                uint16_t c = (px < -size / 2) ? tail : body;
+                fb_pixel(sx + px, sy + py, c);
+            }
+        }
+        fb_pixel(sx + size / 2, sy - 1, eye);
+
+        // "Catch" test — very close to camera and pitched down.
+        if (cam_z < 6.0f && s_cy - FISH_Y < 40.0f) {
+            s_fish[i].caught = true;
+            s_caught++;
+            shrine_beep(1800, 60);
+            shrine_beep(2400, 80);
+        }
     }
 }
 
@@ -224,7 +311,7 @@ static void render_frame(void)
 
         int ymax = SCREEN_H;
         float z = NEAR_Z;
-        float dz = 0.5f;
+        float dz = 0.4f;
         while (z < FAR_Z && ymax > horizon) {
             float wx = s_cx + rx * z;
             float wz = s_cz + rz * z;
@@ -237,9 +324,13 @@ static void render_frame(void)
                 fb_vline(x, screen_y, ymax - screen_y, c);
                 ymax = screen_y;
             }
+            // Aggressive step growth — near sampling stays dense so nearby
+            // features look sharp; far sampling coarsens so total iteration
+            // count stays bounded (~90 per column) even at FAR_Z=140.
             z  += dz;
-            dz += 0.02f;
+            dz += 0.045f;
         }
+        s_col_top[x] = ymax;   // record for sprite occlusion
     }
 }
 
@@ -266,8 +357,8 @@ static void render_hud(uint32_t t_ms)
     fb_puts(2, 8, buf, HUD_FG, HUD_BG);
     snprintf(buf, sizeof(buf), "PIT %+03d", pitch_deg);
     fb_puts(SCREEN_W - 8 * 8, 0, buf, HUD_FG, HUD_BG);
-    snprintf(buf, sizeof(buf), "SPD %03d", (int)s_speed);
-    fb_puts(SCREEN_W - 8 * 8, 8, buf, HUD_FG, HUD_BG);
+    snprintf(buf, sizeof(buf), "FSH %02d/%02d", s_caught, N_FISH);
+    fb_puts(SCREEN_W - 9 * 8, 8, buf, HUD_HIGHLIGHT, HUD_BG);
 
     // Blinking title in the middle-top.
     const char *title = "* TALONS *";
@@ -316,6 +407,7 @@ void game_talons_run(void)
 {
     gen_heightmap();
     build_col_tan();
+    place_fish();
     reset_camera();
 
     uint32_t last = shrine_ms();
@@ -335,7 +427,11 @@ void game_talons_run(void)
         last = now;
 
         update_camera(dt, boost);
+        int horizon = BASE_HORIZON + (int)(s_pitch * 240.0f);
+        if (horizon < 0)   horizon = 0;
+        if (horizon > SCREEN_H) horizon = SCREEN_H;
         render_frame();
+        render_fish(horizon);
         render_hud(now);
 
         display_present_full(s_fb);
