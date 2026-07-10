@@ -1,0 +1,16 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+
+# ESP-IDF — keep sdkconfig.defaults, ignore all other sdkconfig variants
+sdkconfig
+sdkconfig.old
+sdkconfig.*
+!sdkconfig.defaults
+build/
+
+# OS junk
+.DS_Store
+Thumbs.db
