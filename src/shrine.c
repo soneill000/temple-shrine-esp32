@@ -10,10 +10,23 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_timer.h"
-#include "esp_random.h"
+
+#ifdef ESP_PLATFORM
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/task.h"
+  #include "esp_timer.h"
+  #include "esp_random.h"
+  #define PLAT_MS()        ((uint32_t)(esp_timer_get_time() / 1000))
+  #define PLAT_SLEEP(ms)   vTaskDelay(pdMS_TO_TICKS(ms))
+  #define PLAT_RAND()      esp_random()
+#else
+  // Desktop / SDL host build.
+  #include <SDL2/SDL.h>
+  extern void display_frame_end(void);   // implemented by SDL display backend
+  #define PLAT_MS()        SDL_GetTicks()
+  #define PLAT_SLEEP(ms)   do { display_frame_end(); SDL_Delay(ms); } while (0)
+  #define PLAT_RAND()      ((uint32_t)rand())
+#endif
 
 static inline uint16_t rgb(color_t c) { return PAL_RGB565[c & 15]; }
 
@@ -239,8 +252,8 @@ void shrine_snd_off(void)         { audio_off(); }
 
 // --- Timing ---
 
-uint32_t shrine_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
-void shrine_sleep_ms(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); }
+uint32_t shrine_ms(void) { return PLAT_MS(); }
+void shrine_sleep_ms(uint32_t ms) { PLAT_SLEEP(ms); }
 
 // --- Input ---
 
@@ -260,5 +273,5 @@ bool shrine_should_quit(void)
 uint32_t shrine_god(uint32_t upper_exclusive)
 {
     if (upper_exclusive == 0) return 0;
-    return esp_random() % upper_exclusive;
+    return PLAT_RAND() % upper_exclusive;
 }

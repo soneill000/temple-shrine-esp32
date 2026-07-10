@@ -204,6 +204,8 @@ void display_vline(int x, int y, int h, uint16_t color)
     display_fill_rect(x, y, 1, h, color);
 }
 
+void display_frame_end(void) { /* live SPI on badge — nothing to flush */ }
+
 void display_blit(int x, int y, int w, int h, const uint16_t *pixels)
 {
     if (w <= 0 || h <= 0) return;

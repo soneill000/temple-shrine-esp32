@@ -10,6 +10,11 @@
 
 void display_init(void);
 
+// Called by shrine_sleep_ms on host builds so the SDL backend can present
+// the framebuffer. On the badge this is a no-op — the ILI9341 gets pixels
+// live via SPI.
+void display_frame_end(void);
+
 void display_fill_screen(uint16_t color);
 void display_fill_rect(int x, int y, int w, int h, uint16_t color);
 void display_pixel(int x, int y, uint16_t color);
