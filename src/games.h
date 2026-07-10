@@ -15,3 +15,4 @@ void game_whap_run(void);
 // Real ports from Terry's TempleOS Demo/Games/*.HC.
 void game_digits_run(void);
 void game_bombergolf_run(void);
+void game_squirt_run(void);
