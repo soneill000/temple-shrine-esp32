@@ -167,6 +167,77 @@ static void fb_puts(int px, int py, const char *s, uint16_t fg, uint16_t bg)
     while (*s) { fb_putc(px, py, *s++, fg, bg); px += 8; }
 }
 
+static void fb_line(int x0, int y0, int x1, int y1, uint16_t c)
+{
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (1) {
+        fb_pixel(x0, y0, c);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+// Draw the mechanical grabbing talons — two arms extending down from the
+// bottom center of the screen, reaching further and pinching in when
+// fish are close.
+static void render_talons(void)
+{
+    // Find nearest live fish (only if it's roughly in front of the plane).
+    float cy_ = cosf(s_yaw), sy_ = sinf(s_yaw);
+    float min_z = 1e9f;
+    int   near_i = -1;
+    for (int i = 0; i < N_FISH; i++) {
+        if (s_fish[i].caught) continue;
+        float dx = s_fish[i].x - s_cx;
+        float dz = s_fish[i].z - s_cz;
+        float cam_z = -dx * sy_ + dz * cy_;
+        float cam_x =  dx * cy_ + dz * sy_;
+        if (cam_z < 1.0f || cam_z > 12.0f) continue;
+        if (cam_x * cam_x > cam_z * cam_z) continue;   // roughly in front
+        if (cam_z < min_z) { min_z = cam_z; near_i = i; }
+    }
+
+    // Talons hang from the bottom center, base y just off the bottom.
+    int base_cx = SCREEN_W / 2;
+    int base_y  = SCREEN_H - 10;
+
+    // How far to extend and how far apart the fingertips sit.
+    float extend_t = 0.0f;      // 0 = resting; 1 = fully extended
+    int   pinch    = 12;        // fingertip horizontal spread (px)
+    if (near_i >= 0) {
+        extend_t = 1.0f - (min_z / 12.0f);
+        if (extend_t < 0) extend_t = 0;
+        pinch = 12 - (int)(extend_t * 8);   // pinches together at close range
+    }
+    int extend_px = (int)(60.0f * extend_t);
+
+    // Frame of each finger: base at bottom, elbow midway, tip near fish.
+    for (int side = -1; side <= 1; side += 2) {
+        int base_x   = base_cx + side * 14;
+        int elbow_x  = base_cx + side * 20;
+        int elbow_y  = base_y - extend_px / 2;
+        int tip_x    = base_cx + side * pinch;
+        int tip_y    = base_y - extend_px;
+        // Upper arm (base -> elbow)
+        fb_line(base_x - 1, base_y, elbow_x - 1, elbow_y, RGB(20, 22, 22));
+        fb_line(base_x,     base_y, elbow_x,     elbow_y, RGB(28, 28, 28));
+        fb_line(base_x + 1, base_y, elbow_x + 1, elbow_y, RGB(20, 22, 22));
+        // Forearm (elbow -> tip)
+        fb_line(elbow_x - 1, elbow_y, tip_x - 1, tip_y, RGB(20, 22, 22));
+        fb_line(elbow_x,     elbow_y, tip_x,     tip_y, RGB(28, 28, 28));
+        fb_line(elbow_x + 1, elbow_y, tip_x + 1, tip_y, RGB(20, 22, 22));
+        // Claw fingers at the tip — three small hooks
+        for (int f = 0; f < 3; f++) {
+            int hx = tip_x + side * (f * 2);
+            fb_line(hx, tip_y, hx + side * 2, tip_y + 4, RGB(31, 40, 8));
+        }
+    }
+}
+
 // --- Fish sprites ---
 #define N_FISH  16
 #define FISH_Y  40.0f    // world y of water surface
@@ -276,8 +347,10 @@ static void render_fish(int horizon)
         }
         fb_pixel(sx + size / 2, sy - 1, eye);
 
-        // "Catch" test — very close to camera and pitched down.
-        if (cam_z < 6.0f && s_cy - FISH_Y < 40.0f) {
+        // "Catch" test — talons are almost fully extended (cam_z very
+        // small) and we're pointed at the water. Terry's version deploys
+        // automatically at close range; we do the same.
+        if (cam_z < 3.5f) {
             s_fish[i].caught = true;
             s_caught++;
             shrine_beep(1800, 60);
@@ -433,6 +506,7 @@ void game_talons_run(void)
         if (horizon > SCREEN_H) horizon = SCREEN_H;
         render_frame();
         render_fish(horizon);
+        render_talons();
         render_hud(now);
 
         display_present_full(s_fb);

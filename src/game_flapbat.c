@@ -213,7 +213,7 @@ void game_flapbat_run(void)
         if (shrine_should_quit()) return;
         if (shrine_key_pressed(BTN_A) || shrine_key_pressed(BTN_UP)) {
             s_start_ms = shrine_ms();
-            s_bat_v = -3.0f;
+            s_bat_v = -120.0f;
             s_flap_time_ms = (float)s_start_ms;
             shrine_beep(1400, 30);
             break;
@@ -233,28 +233,32 @@ void game_flapbat_run(void)
         last = now;
 
         if (!s_end_ms) {
-            // Flap: A press. Impulse is scaled by time since last flap
-            // (Terry: -0.005 * min(1, dt_since / FLAP_TIME)) so mashing
-            // gives diminishing returns.
+            // Physics in real px/s. Flap sets upward velocity; gravity
+            // pulls back. Terry's diminishing-returns rule kept us from
+            // spamming — we keep it but as a small taper, not a hard
+            // multiply, so first flaps actually work.
             if (shrine_key_pressed(BTN_A) || shrine_key_pressed(BTN_UP)) {
                 float since = (now - s_flap_time_ms) / 1000.0f;
                 float k = since / FLAP_TIME_S;
                 if (k > 1.0f) k = 1.0f;
-                s_bat_v = -3.5f * k;   // stronger if you wait
+                // Base impulse always fires; k tapers a bonus.
+                s_bat_v = -90.0f - 40.0f * k;   // -90 to -130 px/s
                 s_flap_time_ms = (float)now;
                 shrine_beep(1600, 15);
             }
 
-            // Physics.
-            s_bat_v += 8.0f * dt;   // gravity
-            s_bat_y += s_bat_v * 60.0f * dt;   // scaled from Terry's px/tick
+            // Gravity + terminal fall.
+            s_bat_v += 260.0f * dt;
+            if (s_bat_v >  220.0f) s_bat_v =  220.0f;
+            if (s_bat_v < -180.0f) s_bat_v = -180.0f;
+            s_bat_y += s_bat_v * dt;
             if (s_bat_y < GLYPH_H + BORDER) {
                 s_bat_y = GLYPH_H + BORDER;
-                s_bat_v = 0;
+                if (s_bat_v < 0) s_bat_v = 0;
             }
             if (s_bat_y > SCREEN_H - BORDER) {
                 s_bat_y = SCREEN_H - BORDER;
-                s_bat_v = 0;
+                if (s_bat_v > 0) s_bat_v = 0;
             }
 
             // World scroll.
