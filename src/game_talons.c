@@ -172,6 +172,7 @@ static void fb_puts(int px, int py, const char *s, uint16_t fg, uint16_t bg)
 #define FISH_Y  40.0f    // world y of water surface
 typedef struct { float x, z; bool caught; } fish_t;
 static fish_t s_fish[N_FISH];
+static int    s_caught;
 
 static void place_fish(void)
 {
@@ -236,9 +237,9 @@ static void build_col_tan(void)
 
 // Per-column topmost drawn terrain y (for coarse sprite occlusion).
 static int s_col_top[SCREEN_W];
+static int s_caught;
 
 // Render fish as scaled billboards after terrain, before HUD.
-static int s_caught;
 static void render_fish(int horizon)
 {
     float cy_ = cosf(s_yaw), sy_ = sinf(s_yaw);

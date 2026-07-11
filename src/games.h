@@ -17,3 +17,4 @@ void game_talons_run(void);   // Tier-2 voxel-terrain flight demo
 void game_digits_run(void);
 void game_bombergolf_run(void);
 void game_squirt_run(void);
+void game_raindrops_run(void);

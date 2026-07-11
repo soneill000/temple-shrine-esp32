@@ -34,7 +34,7 @@ static void draw_static(void)
 
     shrine_puts_centered(2, "T E M P L E   S H R I N E", C_YELLOW, C_BG);
     shrine_puts_centered(6,  "AN OFFICIAL GOD TEMPLE",     C_LTCYAN, C_BG);
-    shrine_puts_centered(8,  "FOR THE 2026 DEF CON BADGE", C_WHITE,  C_BG);
+    shrine_puts_centered(8,  "FOR THE RETIA DEF CON BADGE", C_WHITE,  C_BG);
 
     shrine_puts_centered(11, "IN MEMORY OF",   C_LTGRAY,  C_BG);
     shrine_puts_centered(13, "TERRY A. DAVIS", C_LTGREEN, C_BG);

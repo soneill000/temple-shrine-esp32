@@ -26,6 +26,7 @@ static const menu_entry_t ENTRIES[] = {
     { "DIGITS",     "MEMORY  (TERRY PORT)", game_digits_run     },
     { "BOMBERGOLF", "BOMB RUN (TERRY PORT)",game_bombergolf_run },
     { "SQUIRT",     "FOUNTAIN (TERRY PORT)",game_squirt_run     },
+    { "RAINDROPS",  "DROPLETS (TERRY PORT)",game_raindrops_run  },
     { "WHAP",       "SMITE THE DEMONS",     game_whap_run       },
     { "FLAPBAT",    "FLAP INTO ETERNITY",   game_flapbat_run    },
     { "SLIDER",     "SLIDING TILES",        game_slider_run     },
