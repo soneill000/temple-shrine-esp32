@@ -28,7 +28,7 @@ static const menu_entry_t ENTRIES[] = {
     { "SQUIRT",     "FOUNTAIN (TERRY PORT)",game_squirt_run     },
     { "RAINDROPS",  "DROPLETS (TERRY PORT)",game_raindrops_run  },
     { "WHAP",       "SMITE THE DEMONS",     game_whap_run       },
-    { "FLAPBAT",    "FLAP INTO ETERNITY",   game_flapbat_run    },
+    { "FLAPBAT",    "EAT BUGS (TERRY PORT)",game_flapbat_run    },
     { "SLIDER",     "SLIDING TILES",        game_slider_run     },
     { "TICTACTOE",  "BATTLE THE FALLEN",    game_tictactoe_run  },
 };
