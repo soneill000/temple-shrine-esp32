@@ -80,24 +80,23 @@ static void reset_game(void)
 }
 
 // --- Bitmap sprite renderer ---
-// Blits a TempleOS palette-indexed bitmap through the shim. 0xFF pixels
-// are transparent; 0..15 look up in the shared PAL_RGB565 table.
+// Blits a TempleOS palette-indexed bitmap through the shim. Composes into
+// a stack buffer with BG fill for transparent pixels, then pushes as ONE
+// display_blit. Previous version fired one SPI transaction per non-
+// transparent pixel (~200 per bat draw); this version fires one.
 static void blit_palette_bitmap(int cx, int cy, int w, int h,
                                 const uint8_t *pixels)
 {
-    int x0 = cx - w / 2;
-    int y0 = cy - h / 2;
+    if (w <= 0 || h <= 0 || w > 48 || h > 48) return;
+    uint16_t buf[48 * 48];
+    uint16_t bg = PAL_RGB565[C_BG];
     for (int row = 0; row < h; row++) {
-        int py = y0 + row;
-        if (py < 0 || py >= SCREEN_H) continue;
         for (int col = 0; col < w; col++) {
             uint8_t p = pixels[row * w + col];
-            if (p == 0xFF) continue;
-            int px = x0 + col;
-            if (px < 0 || px >= SCREEN_W) continue;
-            display_pixel(px, py, PAL_RGB565[p & 15]);
+            buf[row * w + col] = (p == 0xFF) ? bg : PAL_RGB565[p & 15];
         }
     }
+    display_blit(cx - w / 2, cy - h / 2, w, h, buf);
 }
 
 // --- Draw bat ---

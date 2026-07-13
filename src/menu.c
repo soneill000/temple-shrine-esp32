@@ -161,9 +161,13 @@ void menu_run(void)
             shrine_beep(1800, 60);
             audio_stop_song();
             ENTRIES[s_sel].run();
-            // Coming back from a game — repaint.
+            // Coming back from a game — repaint AND reset the tick clock
+            // so we don't credit the game's runtime to the ticker (which
+            // would cause it to fast-scroll to catch up).
             audio_stop_song();
             draw_full();
+            last       = shrine_ms();
+            tick_accum = 0;
         }
         if (shrine_key_pressed(BTN_B)) {
             audio_mute_toggle();
