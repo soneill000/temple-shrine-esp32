@@ -23,6 +23,8 @@
 #include "hw.h"
 #include "palette.h"
 #include "font8x8.h"
+#include "display.h"
+#include "flapbat_sprites.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -77,33 +79,41 @@ static void reset_game(void)
     }
 }
 
+// --- Bitmap sprite renderer ---
+// Blits a TempleOS palette-indexed bitmap through the shim. 0xFF pixels
+// are transparent; 0..15 look up in the shared PAL_RGB565 table.
+static void blit_palette_bitmap(int cx, int cy, int w, int h,
+                                const uint8_t *pixels)
+{
+    int x0 = cx - w / 2;
+    int y0 = cy - h / 2;
+    for (int row = 0; row < h; row++) {
+        int py = y0 + row;
+        if (py < 0 || py >= SCREEN_H) continue;
+        for (int col = 0; col < w; col++) {
+            uint8_t p = pixels[row * w + col];
+            if (p == 0xFF) continue;
+            int px = x0 + col;
+            if (px < 0 || px >= SCREEN_W) continue;
+            display_pixel(px, py, PAL_RGB565[p & 15]);
+        }
+    }
+}
+
 // --- Draw bat ---
-// Two-frame flap animation approximated as: wings up (arced ^) vs
-// wings down (arced v), phase driven by |bat_v|. Eating mouth drawn as
-// a small red wedge on the leading edge.
+// Real Terry sprite (extracted from FlapBat.HC via tools/extract_sprites.py).
+// The eat-frame overlay is a small procedural mouth on the leading edge —
+// sprites 3 and 4 in Terry's file are vector CSprite streams, not bitmaps,
+// so we'll wire those once the vector decoder lands.
 static void draw_bat(int x, int y, float vabs, bool eating)
 {
-    int wing_span = 12;
-    // Body dot.
-    shrine_fill_rect(x - 2, y - 1, 5, 3, C_DKGRAY);
-    // Wings — arc position depends on flap phase (rising wing tips when
-    // velocity is up, dropped wing tips when falling).
-    int tip_dy = (int)(vabs * 4.0f);
-    if (tip_dy > 6) tip_dy = 6;
-    if (s_bat_v < 0) tip_dy = -tip_dy;
-    shrine_line(x - 2, y, x - wing_span, y + tip_dy, C_DKGRAY);
-    shrine_line(x + 2, y, x + wing_span, y + tip_dy, C_DKGRAY);
-    // Eat wedge on the leading edge (right side, since world scrolls
-    // left the bat is effectively moving right relative to the bugs).
+    (void)vabs;
+    blit_palette_bitmap(x, y, SPRITE_FLAPBAT_1_W, SPRITE_FLAPBAT_1_H,
+                        SPRITE_FLAPBAT_1);
     if (eating) {
-        shrine_fill_rect(x + 3, y - 1, 3, 3, C_LTRED);
-        shrine_pixel(x + 4, y - 2, C_YELLOW);
-    } else {
-        shrine_pixel(x + 3, y, C_LTRED);
+        shrine_fill_rect(x + 6, y - 1, 3, 3, C_LTRED);
+        shrine_pixel(x + 7, y - 2, C_YELLOW);
     }
-    // Eyes.
-    shrine_pixel(x - 1, y - 1, C_LTMAGENTA);
-    shrine_pixel(x + 1, y - 1, C_LTMAGENTA);
 }
 
 // --- Draw one bug ---
