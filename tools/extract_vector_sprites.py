@@ -18,31 +18,38 @@ from disasm_sprite import disasm_op, find_sprite_starts, SPT_NAMES
 def find_sprite_regions(tail):
     """
     Walk each candidate sprite payload and record the byte range up to
-    SPT_END. Returns list of (payload_start, payload_end_inclusive_of_END).
+    SPT_END. Returns list of (payload_start, payload_end).
+    Bitmap sprites don't terminate with SPT_END; the walker stops at
+    end-of-pixels which is fine — we take that end offset.
     """
     regions = []
-    seen = set()
     for boundary, payload in find_sprite_starts(tail):
-        if payload in seen:
-            continue
-        seen.add(payload)
         off = payload
-        for _ in range(200):
+        n_ops = 0
+        for _ in range(400):
             name, _, new_off = disasm_op(tail, off)
             if name is None:
                 break
+            n_ops += 1
             if name == "END":
-                regions.append((payload, new_off))
+                regions.append((payload, new_off, n_ops))
+                break
+            if name == "BITMAP":
+                # Bitmap sprite record is just header + pixels — treat
+                # end of pixels as end of sprite.
+                regions.append((payload, new_off, n_ops))
                 break
             if new_off <= off:
                 break
             off = new_off
-    # Deduplicate overlapping regions (find_sprite_starts finds a lot of
-    # false positives inside vector streams because zero bytes are common).
+    # Dedupe overlapping candidates, then drop empty (single-END) sprites.
     regions.sort(key=lambda r: r[0])
     dedup = []
-    for start, end in regions:
-        if dedup and start <= dedup[-1][1]:
+    for start, end, ops in regions:
+        if dedup and start < dedup[-1][1]:
+            continue
+        # Skip sprites whose only op is SPT_END (payload starts with 0x00).
+        if ops == 1 and end - start <= 1:
             continue
         dedup.append((start, end))
     return dedup

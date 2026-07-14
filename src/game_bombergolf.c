@@ -18,6 +18,8 @@
 #include "hw.h"
 #include "palette.h"
 #include "font8x8.h"
+#include "sprite_decoder.h"
+#include "bombergolf_vector_sprites.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -77,41 +79,62 @@ static inline bool on_screen(int sx, int sy, int pad) {
 
 // --- Sprite helpers ---
 
+// Terry's actual BomberGolf sprites, extracted from BomberGolf.HC.
+// Sprite bank mapping (by BI= index inferred from bitmap dimensions):
+//   1: bomber plane icon    (28x32)
+//   2: tree                 (23x18)
+//   3: tank alive           (37x44)
+//   4: tank dead 1          (46x35)
+//   5: tank dead 2          (32x19)
+//   6: bunker alive         (35x19)
+//   7: bunker dead 1        (83x33)  [larger — includes debris]
+//   8: bunker dead 2        (varies)
+
 static void draw_tree(int sx, int sy)
 {
-    if (!on_screen(sx, sy, 4)) return;
-    shrine_fill_rect(sx - 1, sy - 2, 3, 4, C_GREEN);
-    shrine_pixel(sx - 2, sy,     C_GREEN);
-    shrine_pixel(sx + 2, sy,     C_GREEN);
-    shrine_pixel(sx,     sy + 2, C_BROWN);   // trunk
+    if (!on_screen(sx, sy, 20)) return;
+    sprite_render_stream(sprite_bombergolf_2, sizeof(sprite_bombergolf_2),
+                         sx, sy);
 }
 
 static void draw_bunker(int sx, int sy, bool alive, uint32_t t_ms)
 {
-    if (!on_screen(sx, sy, 6)) return;
-    color_t body   = alive ? C_LTGRAY : C_DKGRAY;
-    color_t accent = alive ? C_LTGREEN : C_LTRED;
-    shrine_fill_rect(sx - 4, sy - 4, 9, 9, body);
-    shrine_rect    (sx - 4, sy - 4, 9, 9, C_BLACK);
-    shrine_fill_rect(sx - 1, sy - 1, 3, 3, accent);
-    if (!alive && (t_ms / 200) & 1) {
-        shrine_pixel(sx - 3, sy - 3, C_YELLOW);
-        shrine_pixel(sx + 3, sy + 3, C_YELLOW);
+    if (!on_screen(sx, sy, 30)) return;
+    // Alive: BI=6.  Dead: alternate between BI=7 and BI=8 for a blink.
+    const uint8_t *sp;
+    unsigned sz;
+    if (alive) {
+        sp = sprite_bombergolf_6;
+        sz = sizeof(sprite_bombergolf_6);
+    } else if ((t_ms / 200) & 1) {
+        sp = sprite_bombergolf_7;
+        sz = sizeof(sprite_bombergolf_7);
+    } else {
+        sp = sprite_bombergolf_8;
+        sz = sizeof(sprite_bombergolf_8);
     }
+    sprite_render_stream(sp, sz, sx, sy);
 }
 
 static void draw_tank(int sx, int sy, float theta, bool alive, uint32_t t_ms)
 {
-    if (!on_screen(sx, sy, 6)) return;
-    color_t body   = alive ? C_BROWN   : C_DKGRAY;
-    color_t barrel = alive ? C_YELLOW  : C_LTRED;
-    shrine_fill_rect(sx - 3, sy - 3, 7, 7, body);
-    shrine_rect    (sx - 3, sy - 3, 7, 7, C_BLACK);
-    // Barrel points along theta.
-    int bx = sx + (int)(6.0f * sinf(theta));
-    int by = sy - (int)(6.0f * cosf(theta));
-    shrine_line(sx, sy, bx, by, barrel);
-    if (!alive && (t_ms / 200) & 1) shrine_pixel(sx, sy, C_YELLOW);
+    if (!on_screen(sx, sy, 30)) return;
+    (void)theta;   // Terry's tank sprites are pre-oriented; heading fills
+                   // the barrel line but we don't rotate the sprite here.
+    // Alive: BI=3. Dead: alternate between BI=4 and BI=5.
+    const uint8_t *sp;
+    unsigned sz;
+    if (alive) {
+        sp = sprite_bombergolf_3;
+        sz = sizeof(sprite_bombergolf_3);
+    } else if ((t_ms / 200) & 1) {
+        sp = sprite_bombergolf_4;
+        sz = sizeof(sprite_bombergolf_4);
+    } else {
+        sp = sprite_bombergolf_5;
+        sz = sizeof(sprite_bombergolf_5);
+    }
+    sprite_render_stream(sp, sz, sx, sy);
 }
 
 static void draw_bomb(int sx, int sy, uint32_t age_ms)

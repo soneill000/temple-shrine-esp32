@@ -101,13 +101,17 @@ static void blit_palette_bitmap(int cx, int cy, int w, int h,
 }
 
 // --- Draw bat ---
-// Terry's actual bat sprite, walked as a vector op stream through the
-// sprite_decoder. Coordinates are signed offsets from (x, y) so the bat
-// centers on that point exactly like Terry's Sprite3(dc, x, y, sprite).
+// Terry's actual bat sprite. Rendered into a 48x48 scratch buffer so
+// SPT_FLOOD_FILL can color the wing interiors, then blitted to the
+// panel in one SPI transaction.
 static void draw_bat(int x, int y, float vabs, bool eating)
 {
     (void)vabs;
-    sprite_render_stream(sprite_flapbat_1, sizeof(sprite_flapbat_1), x, y);
+    // Terry's sprite coords span roughly (-14..+14, -28..+3). A 48x48
+    // buffer centered at (24, 32) gives plenty of room.
+    sprite_render_to_panel(x - 24, y - 32, 48, 48, 24, 32,
+                           sprite_flapbat_1, sizeof(sprite_flapbat_1),
+                           PAL_RGB565[C_BG]);
     if (eating) {
         shrine_fill_rect(x + 6, y - 1, 3, 3, C_LTRED);
         shrine_pixel(x + 7, y - 2, C_YELLOW);

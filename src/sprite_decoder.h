@@ -82,3 +82,18 @@ void sprite_render(const sprite_ref_t *sp, int x, int y);
 // LINE, ARROW, RECT, CIRCLE, TRANSFORM_ON/OFF. FLOOD_FILL is a no-op.
 void sprite_render_stream(const uint8_t *stream, unsigned size,
                           int cx, int cy);
+
+// Rasterize into a caller-supplied RGB565 framebuffer instead of the
+// panel. Supports flood fill via scanline algorithm on the buffer.
+// (cx, cy) is the sprite anchor point in fb-local coordinates.
+void sprite_render_buffered(uint16_t *fb, int fb_w, int fb_h,
+                            int cx, int cy,
+                            const uint8_t *stream, unsigned size);
+
+// Convenience: render into a scratch buffer (bg_fill background),
+// then blit to the panel at (dst_x, dst_y). Buffer capped at 64×64.
+void sprite_render_to_panel(int dst_x, int dst_y,
+                            int buf_w, int buf_h,
+                            int cx, int cy,
+                            const uint8_t *stream, unsigned size,
+                            uint16_t bg_fill);
