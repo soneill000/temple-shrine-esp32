@@ -18,3 +18,6 @@ void game_digits_run(void);
 void game_bombergolf_run(void);
 void game_squirt_run(void);
 void game_raindrops_run(void);
+
+// Terry's flagship — Moses journeys through the wilderness.
+void game_afteregypt_run(void);

@@ -19,6 +19,7 @@ typedef struct {
 } menu_entry_t;
 
 static const menu_entry_t ENTRIES[] = {
+    { "AFTER EGYPT","MOSES WANDERS   (TERRY)",game_afteregypt_run },
     { "TALONS",     "FLY THE HEIGHTS",      game_talons_run     },
     { "ORACLE",     "SPEAK TO THE RNG",     game_oracle_run     },
     { "CHRONICLE",  "READ THE SCROLLS",     game_chronicle_run  },
