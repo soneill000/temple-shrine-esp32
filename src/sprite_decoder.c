@@ -382,6 +382,12 @@ void sprite_render_buffered(uint16_t *fb, int W, int H,
 // Convenience: render into a scratch buffer of the caller's size, then
 // blit to the panel at (dst_x, dst_y). Anchor (cx, cy) is relative to
 // the buffer's top-left.
+//
+// Includes Terry's flood-fill leak check: if a SPT_FLOOD_FILL op
+// escapes the outline it was meant to color (because the outline had a
+// gap), the corner pixel gets overwritten. In that case we undo by
+// re-flooding from the corner back to bg_fill. This is exactly what
+// Terry does in FlapBat's DrawIt with limit_flood_fill_dc.
 #include "display.h"
 void sprite_render_to_panel(int dst_x, int dst_y,
                             int buf_w, int buf_h,
@@ -389,12 +395,15 @@ void sprite_render_to_panel(int dst_x, int dst_y,
                             const uint8_t *stream, unsigned size,
                             uint16_t bg_fill)
 {
-    // Cap the scratch buffer at 64x64 to keep stack use bounded.
     if (buf_w <= 0 || buf_h <= 0 || buf_w > 64 || buf_h > 64) return;
     static uint16_t scratch[64 * 64];
     int px = buf_w * buf_h;
     for (int i = 0; i < px; i++) scratch[i] = bg_fill;
     sprite_render_buffered(scratch, buf_w, buf_h, cx, cy, stream, size);
+    // Leak-check + undo. Cheap when no leak (single comparison).
+    if (scratch[0] != bg_fill) {
+        bfr_flood_fill(scratch, buf_w, buf_h, 0, 0, bg_fill);
+    }
     display_blit(dst_x, dst_y, buf_w, buf_h, scratch);
 }
 

@@ -90,51 +90,47 @@ static inline bool on_screen(int sx, int sy, int pad) {
 //   7: bunker dead 1        (83x33)  [larger — includes debris]
 //   8: bunker dead 2        (varies)
 
+// Sprite blit through the buffered path — composes into a 64x64 scratch
+// buffer, then one display_blit. Way faster than per-pixel drawing (which
+// fires one SPI transaction per pixel — ~1600 for a 40x40 tank).
+
 static void draw_tree(int sx, int sy)
 {
     if (!on_screen(sx, sy, 20)) return;
-    sprite_render_stream(sprite_bombergolf_2, sizeof(sprite_bombergolf_2),
-                         sx, sy);
+    sprite_render_to_panel(sx - 32, sy - 32, 64, 64, 32, 32,
+                           sprite_bombergolf_2, sizeof(sprite_bombergolf_2),
+                           PAL_RGB565[C_BG]);
 }
 
 static void draw_bunker(int sx, int sy, bool alive, uint32_t t_ms)
 {
     if (!on_screen(sx, sy, 30)) return;
-    // Alive: BI=6.  Dead: alternate between BI=7 and BI=8 for a blink.
-    const uint8_t *sp;
-    unsigned sz;
+    const uint8_t *sp; unsigned sz;
     if (alive) {
-        sp = sprite_bombergolf_6;
-        sz = sizeof(sprite_bombergolf_6);
+        sp = sprite_bombergolf_6; sz = sizeof(sprite_bombergolf_6);
     } else if ((t_ms / 200) & 1) {
-        sp = sprite_bombergolf_7;
-        sz = sizeof(sprite_bombergolf_7);
+        sp = sprite_bombergolf_7; sz = sizeof(sprite_bombergolf_7);
     } else {
-        sp = sprite_bombergolf_8;
-        sz = sizeof(sprite_bombergolf_8);
+        sp = sprite_bombergolf_8; sz = sizeof(sprite_bombergolf_8);
     }
-    sprite_render_stream(sp, sz, sx, sy);
+    sprite_render_to_panel(sx - 32, sy - 32, 64, 64, 32, 32,
+                           sp, sz, PAL_RGB565[C_BG]);
 }
 
 static void draw_tank(int sx, int sy, float theta, bool alive, uint32_t t_ms)
 {
     if (!on_screen(sx, sy, 30)) return;
-    (void)theta;   // Terry's tank sprites are pre-oriented; heading fills
-                   // the barrel line but we don't rotate the sprite here.
-    // Alive: BI=3. Dead: alternate between BI=4 and BI=5.
-    const uint8_t *sp;
-    unsigned sz;
+    (void)theta;
+    const uint8_t *sp; unsigned sz;
     if (alive) {
-        sp = sprite_bombergolf_3;
-        sz = sizeof(sprite_bombergolf_3);
+        sp = sprite_bombergolf_3; sz = sizeof(sprite_bombergolf_3);
     } else if ((t_ms / 200) & 1) {
-        sp = sprite_bombergolf_4;
-        sz = sizeof(sprite_bombergolf_4);
+        sp = sprite_bombergolf_4; sz = sizeof(sprite_bombergolf_4);
     } else {
-        sp = sprite_bombergolf_5;
-        sz = sizeof(sprite_bombergolf_5);
+        sp = sprite_bombergolf_5; sz = sizeof(sprite_bombergolf_5);
     }
-    sprite_render_stream(sp, sz, sx, sy);
+    sprite_render_to_panel(sx - 32, sy - 32, 64, 64, 32, 32,
+                           sp, sz, PAL_RGB565[C_BG]);
 }
 
 static void draw_bomb(int sx, int sy, uint32_t age_ms)
