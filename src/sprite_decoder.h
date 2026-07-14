@@ -74,6 +74,11 @@ int sprite_scan_tail(const uint8_t *tail, uint32_t tail_size,
                      sprite_ref_t *out, int max_out);
 
 // Rasterize a sprite through the shrine shim, positioned at (x, y).
-// TODO(session-next): dispatch on opcode, translate coords, honor the
-// current color/dither/thickness/transform state.
 void sprite_render(const sprite_ref_t *sp, int x, int y);
+
+// Rasterize a raw op-stream buffer through the shrine shim.
+// Coordinates in the stream are signed offsets from (cx, cy).
+// Covered ops: END, COLOR, DITHER_COLOR (approx), THICK, PT, SHIFT,
+// LINE, ARROW, RECT, CIRCLE, TRANSFORM_ON/OFF. FLOOD_FILL is a no-op.
+void sprite_render_stream(const uint8_t *stream, unsigned size,
+                          int cx, int cy);

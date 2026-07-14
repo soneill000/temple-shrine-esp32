@@ -24,7 +24,8 @@
 #include "palette.h"
 #include "font8x8.h"
 #include "display.h"
-#include "flapbat_sprites.h"
+#include "sprite_decoder.h"
+#include "flapbat_vector_sprites.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -100,15 +101,13 @@ static void blit_palette_bitmap(int cx, int cy, int w, int h,
 }
 
 // --- Draw bat ---
-// Real Terry sprite (extracted from FlapBat.HC via tools/extract_sprites.py).
-// The eat-frame overlay is a small procedural mouth on the leading edge —
-// sprites 3 and 4 in Terry's file are vector CSprite streams, not bitmaps,
-// so we'll wire those once the vector decoder lands.
+// Terry's actual bat sprite, walked as a vector op stream through the
+// sprite_decoder. Coordinates are signed offsets from (x, y) so the bat
+// centers on that point exactly like Terry's Sprite3(dc, x, y, sprite).
 static void draw_bat(int x, int y, float vabs, bool eating)
 {
     (void)vabs;
-    blit_palette_bitmap(x, y, SPRITE_FLAPBAT_1_W, SPRITE_FLAPBAT_1_H,
-                        SPRITE_FLAPBAT_1);
+    sprite_render_stream(sprite_flapbat_1, sizeof(sprite_flapbat_1), x, y);
     if (eating) {
         shrine_fill_rect(x + 6, y - 1, 3, 3, C_LTRED);
         shrine_pixel(x + 7, y - 2, C_YELLOW);
