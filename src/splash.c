@@ -18,8 +18,38 @@
 
 #define BAT_L_X    (6  * GLYPH_W)
 #define BAT_R_X    (SCREEN_W - 7 * GLYPH_W)
-#define BAT_BASE_Y (17 * GLYPH_H)
+#define BAT_BASE_Y (19 * GLYPH_H)
 #define BAT_BOX_H  10
+
+// Stylized TempleOS-style temple emblem: cross above a triangular
+// pediment resting on four columns and a stepped base. Yellow pediment,
+// white everywhere else — matches Terry's palette convention.
+static void draw_temple_logo(void)
+{
+    const int cx = SCREEN_W / 2;
+    // Cross
+    shrine_fill_rect(cx - 1, 118, 3, 12, C_WHITE);         // vertical
+    shrine_fill_rect(cx - 7, 121, 15, 3, C_WHITE);         // horizontal
+    // Pediment — filled triangle (apex above, base 40 wide)
+    for (int dy = 0; dy < 6; dy++) {
+        int w = (dy + 1) * 40 / 6;
+        shrine_fill_rect(cx - w / 2, 130 + dy, w, 1, C_YELLOW);
+    }
+    // Pediment outline
+    shrine_line(cx - 20, 136, cx, 130, C_BROWN);
+    shrine_line(cx, 130, cx + 20, 136, C_BROWN);
+    shrine_hline(cx - 20, 136, 41, C_BROWN);
+    // Four columns
+    shrine_fill_rect(cx - 17, 137, 3, 12, C_WHITE);
+    shrine_fill_rect(cx - 7,  137, 3, 12, C_WHITE);
+    shrine_fill_rect(cx + 4,  137, 3, 12, C_WHITE);
+    shrine_fill_rect(cx + 14, 137, 3, 12, C_WHITE);
+    // Steps (two tiers, each wider than the last)
+    shrine_fill_rect(cx - 22, 149, 45, 2, C_WHITE);
+    shrine_fill_rect(cx - 26, 152, 53, 2, C_WHITE);
+    // Tiny "TEMPLEOS" text underneath
+    shrine_puts_centered(20, "T E M P L E O S", C_YELLOW, C_BG);
+}
 
 #define WORD_ROW   21
 #define PROMPT_ROW 25
@@ -42,6 +72,8 @@ static void draw_static(void)
 
     shrine_puts_centered(28, "PRESS ANY BUTTON TO ENTER THE TEMPLE",
                          C_LTGRAY, C_BG);
+
+    draw_temple_logo();
 }
 
 static void draw_bats(int phase)
