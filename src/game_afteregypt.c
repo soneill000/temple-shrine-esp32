@@ -20,6 +20,7 @@
 #include "vocab.h"
 #include "display.h"
 #include "templeshim.h"
+#include "bible.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -758,8 +759,10 @@ static void clouds_animate(void)
         for (int j = 0; j < AE_CLOUD_PEN_PTS; j++) {
             int nx = p->px[j] + (int)shrine_god(3) - 1;
             int ny = p->py[j] + (int)shrine_god(3) - 1;
-            if (nx < 0) nx = 0; if (nx >= AE_CLOUD_PEN_SIZE) nx = AE_CLOUD_PEN_SIZE - 1;
-            if (ny < 0) ny = 0; if (ny >= AE_CLOUD_PEN_SIZE) ny = AE_CLOUD_PEN_SIZE - 1;
+            if (nx < 0) nx = 0;
+            if (nx >= AE_CLOUD_PEN_SIZE) nx = AE_CLOUD_PEN_SIZE - 1;
+            if (ny < 0) ny = 0;
+            if (ny >= AE_CLOUD_PEN_SIZE) ny = AE_CLOUD_PEN_SIZE - 1;
             p->px[j] = (int8_t)nx; p->py[j] = (int8_t)ny;
         }
     }
@@ -806,9 +809,60 @@ static void clouds_drawit(void)
     }
 }
 
+// Procedural mountain silhouette placed where Terry's Mountain.HC
+// sprite would be drawn — at (0, SKY_LINES*FONT_HEIGHT) with the
+// shape extending upward. Terry's actual sprite is a BP-referenced
+// bitmap in Mountain.HC.Z that we haven't extracted yet; this stands
+// in for it until we do.
+static void draw_mountain_placeholder(int sky_bottom_terry)
+{
+    // Filled triangular peak centered on screen, sitting on the sky/
+    // yellow boundary and pointing up into the sky area.
+    int cx = 320;                          // Terry-space center x
+    int base_y = sky_bottom_terry;         // rests on the boundary
+    int peak_y = sky_bottom_terry - 180;   // apex 180 px up
+    int base_half = 260;                   // wide base
+    // Filled body: horizontal slices from apex to base, widening
+    int slices = base_y - peak_y;
+    gr_dc.color = C_BROWN;
+    for (int i = 0; i < slices; i++) {
+        int hw = base_half * i / slices;
+        GrFillRect(&gr_dc, cx - hw, peak_y + i, hw * 2, 1);
+    }
+    // Ridge outline in DK color so the mountain reads as 3D
+    gr_dc.color = C_DKGRAY;
+    gr_dc.thick = 2;
+    GrLine(&gr_dc, cx - base_half, base_y, cx,             peak_y);
+    GrLine(&gr_dc, cx,             peak_y, cx + base_half, base_y);
+    gr_dc.thick = 1;
+    // A second smaller peak to the left for visual interest
+    int cx2 = 90;
+    int base2_y = sky_bottom_terry;
+    int peak2_y = sky_bottom_terry - 110;
+    int bh2 = 130;
+    for (int i = 0; i < (base2_y - peak2_y); i++) {
+        int hw = bh2 * i / (base2_y - peak2_y);
+        gr_dc.color = C_BROWN;
+        GrFillRect(&gr_dc, cx2 - hw, peak2_y + i, hw * 2, 1);
+    }
+    gr_dc.color = C_DKGRAY;
+    gr_dc.thick = 2;
+    GrLine(&gr_dc, cx2 - bh2, base2_y, cx2,       peak2_y);
+    GrLine(&gr_dc, cx2,       peak2_y, cx2 + bh2, base2_y);
+    gr_dc.thick = 1;
+}
+
 static void scene_clouds(void)
 {
-    // Hook the shim into our shared framebuffer, scale=2 for 640->320.
+    // Terry's Clouds.HC uses SKY_LINES=30 rows of 8-pixel text as the
+    // sky region, then 5 rows of yellow strip, then the Bible verse
+    // occupies the rest of the doc. Layout in Terry-space (640x480):
+    //     y=0..240   LTCYAN sky
+    //     y=240..280 YELLOW strip (5*8 rows)
+    //     y=280..480 verse text on the default BLUE document background
+    const int sky_h    = 30 * 8;   // Terry: SKY_LINES * FONT_HEIGHT
+    const int yellow_h = 5  * 8;
+
     CDCInit(g_scene_fb, SCREEN_W, SCREEN_H, 2);
     clouds_init();
 
@@ -821,39 +875,38 @@ static void scene_clouds(void)
         uint32_t now = shrine_ms();
         if (now - last > 20) { clouds_animate(); last = now; }
 
-        // Sky background — Terry uses LTCYAN
+        // Region backgrounds — mirror Terry's "$$BG,COLOR$$%h*c" text.
         gr_dc.color = C_LTCYAN;
-        DCFill(&gr_dc);
+        GrFillRect(&gr_dc, 0, 0,                  640, sky_h);
+        gr_dc.color = C_YELLOW;
+        GrFillRect(&gr_dc, 0, sky_h,              640, yellow_h);
+        gr_dc.color = C_BG;   // Terry's document default is BLUE bg
+        GrFillRect(&gr_dc, 0, sky_h + yellow_h,   640, 480 - sky_h - yellow_h);
 
-        // Procedural mountain silhouette (Terry loads it as a sprite;
-        // we approximate with brown zig-zag ridges into Terry-space
-        // coordinates — the shim scales for us).
-        gr_dc.color = C_BROWN;
-        gr_dc.thick = 2;
-        int base_y = (int)(0.68f * AE_SKY_HEIGHT);
-        int cx640  = 320;
-        int steps[] = { 120, -110, 90, -80, 70, -60, 45, -30, 0 };
-        int drops[] = {  25,  22, 20, 18, 15, 12, 10,  8, 0 };
-        int lx = cx640, ly = base_y;
-        for (unsigned k = 0; k < sizeof(steps)/sizeof(steps[0]) - 1; k++) {
-            int nx = cx640 + steps[k];
-            int ny = ly - drops[k];
-            GrLine(&gr_dc, lx, ly, nx, ny);
-            lx = nx; ly = ny;
-        }
-        gr_dc.thick = 1;
+        // Mountain — Terry's Sprite3(dc, 0, SKY_LINES*FONT_HEIGHT, ...).
+        draw_mountain_placeholder(sky_h);
 
-        // Clouds via the port of Terry's DrawIt.
+        // Clouds — Terry's DrawIt calls MPDrawClouds workers.
         clouds_drawit();
 
-        // Yellow header bar (Terry sets BG YELLOW for one line) + title.
+        // Bible verse region — Terry calls BibleVerse(,"Exodus,14:19",7).
+        // Look up the same citation in our curated table; kjv_lookup
+        // returns NULL if we don't have the entry, in which case we
+        // just show the citation.
+        const kjv_verse_t *kv = kjv_lookup("EXODUS", 14, 19);
         gr_dc.color = C_YELLOW;
-        GrFillRect(&gr_dc, 0, 0, 640, 20);
+        if (kv) {
+            GrPrint(&gr_dc, 40, sky_h + yellow_h + 24, kv->text);
+        }
+        gr_dc.color = C_LTGREEN;
+        GrPrint(&gr_dc, 40, sky_h + yellow_h + 60, "-- EXODUS 14:19");
+
+        // Chrome
         gr_dc.color = C_BLACK;
-        GrPrint(&gr_dc, 220, 4, "VIEW CLOUDS");
-        GrPrint(&gr_dc, 200, 460, "SEE EXODUS 14:19");
+        GrPrint(&gr_dc, 8, sky_h + 8, "VIEW CLOUDS");
         gr_dc.color = C_LTGRAY;
-        GrPrint(&gr_dc, 20, 460, "PRESS A OR BOOT TO RETURN");
+        GrPrint(&gr_dc, 8, sky_h + yellow_h + 108,
+                "PRESS A OR BOOT TO RETURN");
 
         DCPresent(&gr_dc);
         shrine_sleep_ms(40);
