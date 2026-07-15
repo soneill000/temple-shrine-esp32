@@ -24,15 +24,9 @@
 #include <string.h>
 #include <math.h>
 
-#ifdef ESP_PLATFORM
-  #include "esp_attr.h"
-  #define FB_ATTR EXT_RAM_BSS_ATTR   // parks framebuffer in PSRAM
-#else
-  #define FB_ATTR
-#endif
-
-// --- Framebuffer ---
-FB_ATTR static uint16_t s_fb[SCREEN_W * SCREEN_H];
+// --- Framebuffer: shared with other scenes (see scene_fb.h) ---
+#include "scene_fb.h"
+#define s_fb g_scene_fb
 
 // Build an RGB565 word from 5/6/5-bit channels.
 #define RGB(r5, g6, b5) (uint16_t)(((r5) << 11) | ((g6) << 5) | (b5))

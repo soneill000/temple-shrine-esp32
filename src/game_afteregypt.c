@@ -23,18 +23,12 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifdef ESP_PLATFORM
-  #include "esp_attr.h"
-  #define FB_ATTR EXT_RAM_BSS_ATTR
-#else
-  #define FB_ATTR
-#endif
-
-// --- Off-screen framebuffer for the After Egypt scenes. Composed in
-// memory then pushed as ONE SPI transaction via display_present_full —
-// this eliminates the mid-frame clear/redraw flicker that the direct
-// shrine_* pipeline produces on the ILI9341 (no vsync).
-FB_ATTR static uint16_t s_fb[SCREEN_W * SCREEN_H];
+// --- Off-screen framebuffer, shared with other scenes (see scene_fb.h).
+// Composed in memory then pushed as ONE SPI transaction via
+// display_present_full — eliminates the mid-frame clear/redraw flicker
+// that the direct shrine_* pipeline produces on the ILI9341 (no vsync).
+#include "scene_fb.h"
+#define s_fb g_scene_fb
 
 static inline uint16_t rgb(color_t c) { return PAL_RGB565[c & 15]; }
 
