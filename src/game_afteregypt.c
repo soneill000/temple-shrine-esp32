@@ -17,6 +17,7 @@
 #include "hw.h"
 #include "palette.h"
 #include "font8x8.h"
+#include "vocab.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -177,6 +178,133 @@ static void scene_court(void)
     }
 }
 
+// --- GodTalking scene ---
+// Terry's DrawGodTalking draws a mountain sprite backdrop + a burning
+// bush + a shower of random-length flame lines around the flame area,
+// then his UpTheMountain flow calls GodWord in a 16-iteration loop
+// (or GodBiblePassage once). We reproduce the same feel with
+// procedural art (mountain silhouette from lines, bush trunk + flame
+// pixels) and reuse our vocab list for the oracle text.
+
+static void draw_god_backdrop(uint32_t t_ms)
+{
+    shrine_clear(C_LTCYAN);   // sky
+    // Ground band at bottom
+    shrine_fill_rect(0, SCREEN_H - 60, SCREEN_W, 60, C_BROWN);
+    // Mountain ridges — zig-zag from screen center, decreasing width.
+    // Same pattern as Terry's Mountain: successive line segments
+    // stepping upward and folding back, forming a jagged peak.
+    int cx = SCREEN_W / 2;
+    int cy = SCREEN_H - 60;
+    int steps[]  = { 60, -55, 45, -40, 35, -30, 22, -14, 0 };
+    int drops[]  = { 12,  10,  9,  8,  7,  6,  5,  4, 0 };
+    int lx = cx, ly = cy;
+    for (unsigned i = 0; i < sizeof(steps)/sizeof(steps[0]) - 1; i++) {
+        int nx = cx + steps[i];
+        int ny = ly - drops[i];
+        shrine_line(lx, ly, nx, ny, C_BROWN);
+        shrine_line(lx, ly - 1, nx, ny - 1, C_BROWN);
+        lx = nx; ly = ny;
+    }
+    // Sun (upper left)
+    shrine_fill_circle(30, 24, 12, C_YELLOW);
+    shrine_circle(30, 24, 12, C_BROWN);
+
+    // Blinking "MT HOREB" title
+    if ((t_ms / 500) & 1) {
+        shrine_puts_centered(9, "MT  HOREB", C_BLACK, C_LTCYAN);
+    }
+
+    // Burning bush: small brown trunk at right side
+    int bx = SCREEN_W - 60, by = SCREEN_H - 70;
+    shrine_fill_rect(bx - 2, by, 4, 14, C_BROWN);
+    // Flame flicker: cluster of yellow/red pixels dancing above trunk
+    for (int i = 0; i < 20; i++) {
+        int dx = (int)shrine_god(20) - 10;
+        int dy = (int)shrine_god(18);
+        color_t c = (i & 1) ? C_YELLOW : C_LTRED;
+        shrine_pixel(bx + dx, by - dy, c);
+    }
+    // Small yellow crown atop trunk
+    shrine_fill_circle(bx, by - 4, 4, C_YELLOW);
+}
+
+static void scene_god(void)
+{
+    const char *saying = NULL;
+    bool passage_mode  = false;
+    uint32_t frame_ms  = shrine_ms();
+
+    draw_god_backdrop(frame_ms);
+    shrine_puts_centered(20, "PRESS A  A WORD",     C_LTGREEN, C_LTCYAN);
+    shrine_puts_centered(22, "PRESS B  A PASSAGE",  C_YELLOW,  C_LTCYAN);
+
+    while (1) {
+        shrine_input_scan();
+        if (shrine_should_quit()) return;
+
+        bool need_redraw = false;
+
+        if (shrine_key_pressed(BTN_A)) {
+            saying = VOCAB[shrine_god(VOCAB_N)];
+            passage_mode = false;
+            need_redraw = true;
+            shrine_beep(1600, 60);
+            shrine_beep(2200, 80);
+        }
+        if (shrine_key_pressed(BTN_B)) {
+            passage_mode = true;
+            need_redraw = true;
+            shrine_beep(1000, 60);
+            shrine_beep(1400, 60);
+            shrine_beep(1800, 100);
+        }
+
+        // Bush flame reflicker every ~250 ms even without input.
+        uint32_t now = shrine_ms();
+        if (now - frame_ms > 250) {
+            frame_ms = now;
+            need_redraw = true;
+        }
+
+        if (need_redraw) {
+            draw_god_backdrop(now);
+            if (saying && !passage_mode) {
+                shrine_puts_centered(19, "GOD SAYS", C_LTGREEN, C_LTCYAN);
+                // Big text: use scaled render for the word.
+                int scale = 2;
+                int w = 8 * scale * (int)strlen(saying);
+                if (w > SCREEN_W - 20) scale = 1;
+                shrine_puts_centered_scaled(22 * GLYPH_H, saying,
+                                            C_BLACK, C_LTCYAN, scale);
+                shrine_puts_centered(26, "A AGAIN   B PASSAGE   BOOT EXIT",
+                                     C_LTGRAY, C_LTCYAN);
+            } else if (passage_mode) {
+                // Random-line "passage" — three lines drawn from vocab
+                // words assembled into short phrases. Original wording.
+                const char *w1 = VOCAB[shrine_god(VOCAB_N)];
+                const char *w2 = VOCAB[shrine_god(VOCAB_N)];
+                const char *w3 = VOCAB[shrine_god(VOCAB_N)];
+                char l1[48], l2[48], l3[48];
+                snprintf(l1, sizeof(l1), "AND HE LIFTED UP HIS %s,", w1);
+                snprintf(l2, sizeof(l2), "AND THE %s WAS UPON HIM,",   w2);
+                snprintf(l3, sizeof(l3), "AND HE CALLED IT %s.",       w3);
+                shrine_puts_centered(19, l1, C_BLACK, C_LTCYAN);
+                shrine_puts_centered(21, l2, C_BLACK, C_LTCYAN);
+                shrine_puts_centered(23, l3, C_BLACK, C_LTCYAN);
+                shrine_puts_centered(26, "A WORD   B PASSAGE   BOOT EXIT",
+                                     C_LTGRAY, C_LTCYAN);
+            } else {
+                shrine_puts_centered(20, "PRESS A  A WORD",
+                                     C_LTGREEN, C_LTCYAN);
+                shrine_puts_centered(22, "PRESS B  A PASSAGE",
+                                     C_YELLOW,  C_LTCYAN);
+            }
+        }
+        shrine_sleep_ms(30);
+    }
+}
+
 // --- Stub scenes (flesh out one at a time in follow-up commits) ---
 static void scene_stub(const char *title, const char *evocative)
 {
@@ -226,7 +354,7 @@ void game_afteregypt_run(void)
             shrine_beep(1800, 60);
             switch (MENU[s_sel].id) {
             case SC_COURT:  scene_court(); break;
-            case SC_GOD:    scene_stub("TALK WITH GOD", "A VOICE FROM THE FLAME"); break;
+            case SC_GOD:    scene_god();   break;
             case SC_CLOUDS: scene_stub("VIEW CLOUDS",   "SIGNS IN THE SKY");       break;
             case SC_MAP:    scene_stub("VIEW MAP",      "THE WILDERNESS BEFORE YOU"); break;
             case SC_CAMP:   scene_stub("BREAK CAMP",    "THE PEOPLE PREPARE");     break;
