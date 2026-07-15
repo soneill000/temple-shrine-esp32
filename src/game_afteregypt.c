@@ -18,9 +18,127 @@
 #include "palette.h"
 #include "font8x8.h"
 #include "vocab.h"
+#include "display.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#ifdef ESP_PLATFORM
+  #include "esp_attr.h"
+  #define FB_ATTR EXT_RAM_BSS_ATTR
+#else
+  #define FB_ATTR
+#endif
+
+// --- Off-screen framebuffer for the After Egypt scenes. Composed in
+// memory then pushed as ONE SPI transaction via display_present_full —
+// this eliminates the mid-frame clear/redraw flicker that the direct
+// shrine_* pipeline produces on the ILI9341 (no vsync).
+FB_ATTR static uint16_t s_fb[SCREEN_W * SCREEN_H];
+
+static inline uint16_t rgb(color_t c) { return PAL_RGB565[c & 15]; }
+
+static inline void fb_pixel(int x, int y, color_t c)
+{
+    if ((unsigned)x < (unsigned)SCREEN_W && (unsigned)y < (unsigned)SCREEN_H)
+        s_fb[y * SCREEN_W + x] = rgb(c);
+}
+static inline void fb_pixel_raw(int x, int y, uint16_t r)
+{
+    if ((unsigned)x < (unsigned)SCREEN_W && (unsigned)y < (unsigned)SCREEN_H)
+        s_fb[y * SCREEN_W + x] = r;
+}
+static void fb_fill_rect(int x, int y, int w, int h, color_t c)
+{
+    if (w <= 0 || h <= 0) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > SCREEN_W) w = SCREEN_W - x;
+    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    if (w <= 0 || h <= 0) return;
+    uint16_t v = rgb(c);
+    for (int j = 0; j < h; j++) {
+        uint16_t *p = &s_fb[(y + j) * SCREEN_W + x];
+        for (int i = 0; i < w; i++) p[i] = v;
+    }
+}
+static inline void fb_hline(int x, int y, int w, color_t c) { fb_fill_rect(x, y, w, 1, c); }
+static inline void fb_vline(int x, int y, int h, color_t c) { fb_fill_rect(x, y, 1, h, c); }
+static void fb_rect(int x, int y, int w, int h, color_t c)
+{
+    fb_hline(x,         y,         w, c);
+    fb_hline(x,         y + h - 1, w, c);
+    fb_vline(x,         y,         h, c);
+    fb_vline(x + w - 1, y,         h, c);
+}
+static void fb_line(int x0, int y0, int x1, int y1, color_t c)
+{
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int dy = -(y1 > y0 ? y1 - y0 : y0 - y1);
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (1) {
+        fb_pixel(x0, y0, c);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+static void fb_fill_circle(int cx, int cy, int r, color_t c)
+{
+    int r2 = r * r;
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = 0;
+        while ((dx + 1) * (dx + 1) + dy * dy <= r2) dx++;
+        fb_fill_rect(cx - dx, cy + dy, 2 * dx + 1, 1, c);
+    }
+}
+static void fb_circle(int cx, int cy, int r, color_t c)
+{
+    int x = 0, y = r, d = 3 - 2 * r;
+    while (y >= x) {
+        fb_pixel(cx + x, cy + y, c); fb_pixel(cx - x, cy + y, c);
+        fb_pixel(cx + x, cy - y, c); fb_pixel(cx - x, cy - y, c);
+        fb_pixel(cx + y, cy + x, c); fb_pixel(cx - y, cy + x, c);
+        fb_pixel(cx + y, cy - x, c); fb_pixel(cx - y, cy - x, c);
+        x++;
+        if (d > 0) { y--; d += 4 * (x - y) + 10; } else d += 4 * x + 6;
+    }
+}
+static void fb_putcxy(int x, int y, char ch, color_t fg, color_t bg)
+{
+    uint8_t code = (uint8_t)ch;
+    if (code >= 128) code = ' ';
+    const uint8_t *g = FONT8X8[code];
+    uint16_t f = rgb(fg), b = rgb(bg);
+    for (int row = 0; row < 8; row++) {
+        uint8_t bits = g[row];
+        for (int col = 0; col < 8; col++) {
+            fb_pixel_raw(x + col, y + row, (bits & (1 << col)) ? f : b);
+        }
+    }
+}
+static void fb_puts(int col, int row, const char *s, color_t fg, color_t bg)
+{
+    int x = col * GLYPH_W, y = row * GLYPH_H;
+    while (*s) { fb_putcxy(x, y, *s++, fg, bg); x += GLYPH_W; }
+}
+static void fb_puts_centered(int row, const char *s, color_t fg, color_t bg)
+{
+    int n = 0; while (s[n]) n++;
+    int x = (SCREEN_W - n * GLYPH_W) / 2;
+    int y = row * GLYPH_H;
+    while (*s) { fb_putcxy(x, y, *s++, fg, bg); x += GLYPH_W; }
+}
+static inline void fb_clear(color_t c)
+{
+    uint16_t v = rgb(c);
+    int n = SCREEN_W * SCREEN_H;
+    for (int i = 0; i < n; i++) s_fb[i] = v;
+}
+static inline void fb_present(void) { display_present_full(s_fb); }
 
 // --- Scene identifiers ---
 typedef enum {
@@ -186,122 +304,112 @@ static void scene_court(void)
 // procedural art (mountain silhouette from lines, bush trunk + flame
 // pixels) and reuse our vocab list for the oracle text.
 
-static void draw_god_backdrop(uint32_t t_ms)
+// Draw the god-talking backdrop straight into the framebuffer. Called
+// once per frame; single fb_present() at end blits the whole thing.
+static void fb_god_backdrop(uint32_t t_ms)
 {
-    shrine_clear(C_LTCYAN);   // sky
-    // Ground band at bottom
-    shrine_fill_rect(0, SCREEN_H - 60, SCREEN_W, 60, C_BROWN);
-    // Mountain ridges — zig-zag from screen center, decreasing width.
-    // Same pattern as Terry's Mountain: successive line segments
-    // stepping upward and folding back, forming a jagged peak.
+    fb_clear(C_LTCYAN);   // sky
+    fb_fill_rect(0, SCREEN_H - 60, SCREEN_W, 60, C_BROWN);
+    // Mountain ridge zig-zag
     int cx = SCREEN_W / 2;
     int cy = SCREEN_H - 60;
-    int steps[]  = { 60, -55, 45, -40, 35, -30, 22, -14, 0 };
-    int drops[]  = { 12,  10,  9,  8,  7,  6,  5,  4, 0 };
+    int steps[] = { 60, -55, 45, -40, 35, -30, 22, -14, 0 };
+    int drops[] = { 12,  10,  9,  8,  7,  6,  5,  4, 0 };
     int lx = cx, ly = cy;
     for (unsigned i = 0; i < sizeof(steps)/sizeof(steps[0]) - 1; i++) {
         int nx = cx + steps[i];
         int ny = ly - drops[i];
-        shrine_line(lx, ly, nx, ny, C_BROWN);
-        shrine_line(lx, ly - 1, nx, ny - 1, C_BROWN);
+        fb_line(lx, ly, nx, ny, C_BROWN);
+        fb_line(lx, ly - 1, nx, ny - 1, C_BROWN);
         lx = nx; ly = ny;
     }
-    // Sun (upper left)
-    shrine_fill_circle(30, 24, 12, C_YELLOW);
-    shrine_circle(30, 24, 12, C_BROWN);
+    fb_fill_circle(30, 24, 12, C_YELLOW);
+    fb_circle    (30, 24, 12, C_BROWN);
 
-    // Blinking "MT HOREB" title
-    if ((t_ms / 500) & 1) {
-        shrine_puts_centered(9, "MT  HOREB", C_BLACK, C_LTCYAN);
-    }
+    if ((t_ms / 500) & 1)
+        fb_puts_centered(9, "MT  HOREB", C_BLACK, C_LTCYAN);
 
-    // Burning bush: small brown trunk at right side
+    // Burning bush trunk + flame flicker
     int bx = SCREEN_W - 60, by = SCREEN_H - 70;
-    shrine_fill_rect(bx - 2, by, 4, 14, C_BROWN);
-    // Flame flicker: cluster of yellow/red pixels dancing above trunk
+    fb_fill_rect(bx - 2, by, 4, 14, C_BROWN);
     for (int i = 0; i < 20; i++) {
         int dx = (int)shrine_god(20) - 10;
         int dy = (int)shrine_god(18);
-        color_t c = (i & 1) ? C_YELLOW : C_LTRED;
-        shrine_pixel(bx + dx, by - dy, c);
+        fb_pixel(bx + dx, by - dy, (i & 1) ? C_YELLOW : C_LTRED);
     }
-    // Small yellow crown atop trunk
-    shrine_fill_circle(bx, by - 4, 4, C_YELLOW);
+    fb_fill_circle(bx, by - 4, 4, C_YELLOW);
 }
 
 static void scene_god(void)
 {
     const char *saying = NULL;
     bool passage_mode  = false;
-    uint32_t frame_ms  = shrine_ms();
-
-    draw_god_backdrop(frame_ms);
-    shrine_puts_centered(20, "PRESS A  A WORD",     C_LTGREEN, C_LTCYAN);
-    shrine_puts_centered(22, "PRESS B  A PASSAGE",  C_YELLOW,  C_LTCYAN);
+    const char *l1 = NULL, *l2 = NULL, *l3 = NULL;
+    char pbuf1[48], pbuf2[48], pbuf3[48];
 
     while (1) {
         shrine_input_scan();
         if (shrine_should_quit()) return;
-
-        bool need_redraw = false;
+        uint32_t now = shrine_ms();
 
         if (shrine_key_pressed(BTN_A)) {
             saying = VOCAB[shrine_god(VOCAB_N)];
             passage_mode = false;
-            need_redraw = true;
             shrine_beep(1600, 60);
             shrine_beep(2200, 80);
         }
         if (shrine_key_pressed(BTN_B)) {
+            const char *w1 = VOCAB[shrine_god(VOCAB_N)];
+            const char *w2 = VOCAB[shrine_god(VOCAB_N)];
+            const char *w3 = VOCAB[shrine_god(VOCAB_N)];
+            snprintf(pbuf1, sizeof(pbuf1), "AND HE LIFTED UP HIS %s,", w1);
+            snprintf(pbuf2, sizeof(pbuf2), "AND THE %s WAS UPON HIM,",   w2);
+            snprintf(pbuf3, sizeof(pbuf3), "AND HE CALLED IT %s.",       w3);
+            l1 = pbuf1; l2 = pbuf2; l3 = pbuf3;
             passage_mode = true;
-            need_redraw = true;
             shrine_beep(1000, 60);
             shrine_beep(1400, 60);
             shrine_beep(1800, 100);
         }
 
-        // Bush flame reflicker every ~250 ms even without input.
-        uint32_t now = shrine_ms();
-        if (now - frame_ms > 250) {
-            frame_ms = now;
-            need_redraw = true;
-        }
-
-        if (need_redraw) {
-            draw_god_backdrop(now);
-            if (saying && !passage_mode) {
-                shrine_puts_centered(19, "GOD SAYS", C_LTGREEN, C_LTCYAN);
-                // Big text: use scaled render for the word.
-                int scale = 2;
-                int w = 8 * scale * (int)strlen(saying);
-                if (w > SCREEN_W - 20) scale = 1;
-                shrine_puts_centered_scaled(22 * GLYPH_H, saying,
-                                            C_BLACK, C_LTCYAN, scale);
-                shrine_puts_centered(26, "A AGAIN   B PASSAGE   BOOT EXIT",
-                                     C_LTGRAY, C_LTCYAN);
-            } else if (passage_mode) {
-                // Random-line "passage" — three lines drawn from vocab
-                // words assembled into short phrases. Original wording.
-                const char *w1 = VOCAB[shrine_god(VOCAB_N)];
-                const char *w2 = VOCAB[shrine_god(VOCAB_N)];
-                const char *w3 = VOCAB[shrine_god(VOCAB_N)];
-                char l1[48], l2[48], l3[48];
-                snprintf(l1, sizeof(l1), "AND HE LIFTED UP HIS %s,", w1);
-                snprintf(l2, sizeof(l2), "AND THE %s WAS UPON HIM,",   w2);
-                snprintf(l3, sizeof(l3), "AND HE CALLED IT %s.",       w3);
-                shrine_puts_centered(19, l1, C_BLACK, C_LTCYAN);
-                shrine_puts_centered(21, l2, C_BLACK, C_LTCYAN);
-                shrine_puts_centered(23, l3, C_BLACK, C_LTCYAN);
-                shrine_puts_centered(26, "A WORD   B PASSAGE   BOOT EXIT",
-                                     C_LTGRAY, C_LTCYAN);
-            } else {
-                shrine_puts_centered(20, "PRESS A  A WORD",
-                                     C_LTGREEN, C_LTCYAN);
-                shrine_puts_centered(22, "PRESS B  A PASSAGE",
-                                     C_YELLOW,  C_LTCYAN);
+        // Draw whole frame off-screen, then present.
+        fb_god_backdrop(now);
+        if (saying && !passage_mode) {
+            fb_puts_centered(19, "GOD SAYS", C_LTGREEN, C_LTCYAN);
+            // Big text via manual scaled putc.
+            int scale = 2;
+            int nlen = 0; while (saying[nlen]) nlen++;
+            if (nlen * 8 * scale > SCREEN_W - 20) scale = 1;
+            int text_w = nlen * 8 * scale;
+            int sx = (SCREEN_W - text_w) / 2;
+            int sy = 22 * GLYPH_H;
+            for (int i = 0; i < nlen; i++) {
+                uint8_t code = (uint8_t)saying[i]; if (code >= 128) code = ' ';
+                const uint8_t *g = FONT8X8[code];
+                for (int r = 0; r < 8; r++) {
+                    uint8_t bits = g[r];
+                    for (int col = 0; col < 8; col++) {
+                        if (bits & (1 << col)) {
+                            fb_fill_rect(sx + i * 8 * scale + col * scale,
+                                         sy + r * scale, scale, scale, C_BLACK);
+                        }
+                    }
+                }
             }
+            fb_puts_centered(26, "A AGAIN   B PASSAGE   BOOT EXIT",
+                             C_LTGRAY, C_LTCYAN);
+        } else if (passage_mode) {
+            fb_puts_centered(19, l1, C_BLACK, C_LTCYAN);
+            fb_puts_centered(21, l2, C_BLACK, C_LTCYAN);
+            fb_puts_centered(23, l3, C_BLACK, C_LTCYAN);
+            fb_puts_centered(26, "A WORD   B PASSAGE   BOOT EXIT",
+                             C_LTGRAY, C_LTCYAN);
+        } else {
+            fb_puts_centered(20, "PRESS A  A WORD",    C_LTGREEN, C_LTCYAN);
+            fb_puts_centered(22, "PRESS B  A PASSAGE", C_YELLOW,  C_LTCYAN);
         }
-        shrine_sleep_ms(30);
+        fb_present();
+        shrine_sleep_ms(60);
     }
 }
 
@@ -324,57 +432,51 @@ static void scene_water(void)
             shrine_beep(400, 60);
         }
 
-        shrine_clear(C_BG);
-        shrine_puts_centered(1, "*  WATER ROCK  *", C_YELLOW, C_BG);
-        shrine_puts_centered(3, "STRIKE THE ROCK", C_LTCYAN, C_BG);
-        for (int c = 1; c < TEXT_COLS - 1; c++)
-            shrine_putc(c, 5, G_HLINE[0], C_YELLOW, C_BG);
+        fb_clear(C_BG);
+        fb_puts_centered(1, "*  WATER ROCK  *", C_YELLOW, C_BG);
+        fb_puts_centered(3, "STRIKE THE ROCK",   C_LTCYAN, C_BG);
+        fb_hline(GLYPH_W, 5 * GLYPH_H, SCREEN_W - 2 * GLYPH_W, C_YELLOW);
 
-        // Rock: irregular filled shape on right
         int rx = SCREEN_W - 100, ry = 120;
         for (int r = 0; r < 60; r += 4) {
             int w = 50 - r / 4;
-            shrine_fill_rect(rx - w / 2, ry + r, w, 4, C_DKGRAY);
+            fb_fill_rect(rx - w / 2, ry + r, w, 4, C_DKGRAY);
         }
-        shrine_rect(rx - 26, ry, 52, 60, C_LTGRAY);
+        fb_rect(rx - 26, ry, 52, 60, C_LTGRAY);
 
-        // Moses on left with rod
         int mx = 60, my = 130;
-        shrine_fill_rect(mx, my, 4, 40, C_BROWN);         // body
-        shrine_fill_circle(mx + 2, my - 6, 6, C_LTGRAY);   // head
+        fb_fill_rect(mx, my, 4, 40, C_BROWN);
+        fb_fill_circle(mx + 2, my - 6, 6, C_LTGRAY);
         int rod_len = 34 + (struck ? 6 : 0);
-        shrine_line(mx + 4, my + 8, mx + rod_len, my - 4, C_YELLOW);
-        shrine_line(mx + 4, my + 9, mx + rod_len, my - 3, C_YELLOW);
+        fb_line(mx + 4, my + 8, mx + rod_len, my - 4, C_YELLOW);
+        fb_line(mx + 4, my + 9, mx + rod_len, my - 3, C_YELLOW);
 
-        // Water plume grows with strikes
-        int level = strikes * 6;
-        if (level > 90) level = 90;
+        int level = strikes * 6; if (level > 90) level = 90;
         for (int i = 0; i < level; i++) {
             int px = rx - 40 - (int)shrine_god(20);
             int py = ry + 20 - i;
             color_t c = (i & 1) ? C_LTCYAN : C_LTBLUE;
-            shrine_pixel(px, py, c);
-            shrine_pixel(px + 1, py, c);
+            fb_pixel(px,     py, c);
+            fb_pixel(px + 1, py, c);
         }
-        // Puddle at base
         if (strikes > 0) {
             int pw = strikes * 8; if (pw > 160) pw = 160;
-            shrine_fill_rect(rx - 60 - pw / 2, SCREEN_H - 40, pw, 4, C_LTBLUE);
+            fb_fill_rect(rx - 60 - pw / 2, SCREEN_H - 40, pw, 4, C_LTBLUE);
         }
 
         char buf[32];
         snprintf(buf, sizeof(buf), "STRIKES: %d / %d", strikes, NEEDED);
-        shrine_puts_centered(TEXT_ROWS - 3, buf, C_WHITE, C_BG);
-        shrine_puts_centered(TEXT_ROWS - 1, "A STRIKE   BOOT EXIT",
-                             C_LTGRAY, C_BG);
+        fb_puts_centered(TEXT_ROWS - 3, buf, C_WHITE, C_BG);
+        fb_puts_centered(TEXT_ROWS - 1, "A STRIKE   BOOT EXIT",
+                         C_LTGRAY, C_BG);
 
         if (strikes >= NEEDED) {
-            shrine_puts_centered(15, "THE PEOPLE DRINK.", C_LTGREEN, C_BG);
-            shrine_puts_centered(17, "MOSES REJOICES.",  C_YELLOW,  C_BG);
+            fb_puts_centered(15, "THE PEOPLE DRINK.", C_LTGREEN, C_BG);
+            fb_puts_centered(17, "MOSES REJOICES.",  C_YELLOW,  C_BG);
+            fb_present();
             shrine_beep(1800, 100);
             shrine_beep(2200, 100);
             shrine_beep(2600, 200);
-            // Wait for A to return
             while (1) {
                 shrine_input_scan();
                 if (shrine_should_quit()) return;
@@ -382,6 +484,7 @@ static void scene_water(void)
                 shrine_sleep_ms(30);
             }
         }
+        fb_present();
         shrine_sleep_ms(50);
     }
 }
