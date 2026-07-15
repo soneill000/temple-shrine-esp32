@@ -305,6 +305,284 @@ static void scene_god(void)
     }
 }
 
+// --- Water Rock scene ---
+// Terry's WaterRock: Moses strikes the rock with a rod, water gushes.
+// 5 sprites, 4-frame animation. Our version: procedural rock + growing
+// water plume + strike counter. Fill the pot to move on.
+static void scene_water(void)
+{
+    int strikes = 0;
+    const int NEEDED = 8;
+    while (1) {
+        shrine_input_scan();
+        if (shrine_should_quit()) return;
+
+        bool struck = shrine_key_pressed(BTN_A);
+        if (struck) {
+            strikes++;
+            shrine_beep(600, 40);
+            shrine_beep(400, 60);
+        }
+
+        shrine_clear(C_BG);
+        shrine_puts_centered(1, "*  WATER ROCK  *", C_YELLOW, C_BG);
+        shrine_puts_centered(3, "STRIKE THE ROCK", C_LTCYAN, C_BG);
+        for (int c = 1; c < TEXT_COLS - 1; c++)
+            shrine_putc(c, 5, G_HLINE[0], C_YELLOW, C_BG);
+
+        // Rock: irregular filled shape on right
+        int rx = SCREEN_W - 100, ry = 120;
+        for (int r = 0; r < 60; r += 4) {
+            int w = 50 - r / 4;
+            shrine_fill_rect(rx - w / 2, ry + r, w, 4, C_DKGRAY);
+        }
+        shrine_rect(rx - 26, ry, 52, 60, C_LTGRAY);
+
+        // Moses on left with rod
+        int mx = 60, my = 130;
+        shrine_fill_rect(mx, my, 4, 40, C_BROWN);         // body
+        shrine_fill_circle(mx + 2, my - 6, 6, C_LTGRAY);   // head
+        int rod_len = 34 + (struck ? 6 : 0);
+        shrine_line(mx + 4, my + 8, mx + rod_len, my - 4, C_YELLOW);
+        shrine_line(mx + 4, my + 9, mx + rod_len, my - 3, C_YELLOW);
+
+        // Water plume grows with strikes
+        int level = strikes * 6;
+        if (level > 90) level = 90;
+        for (int i = 0; i < level; i++) {
+            int px = rx - 40 - (int)shrine_god(20);
+            int py = ry + 20 - i;
+            color_t c = (i & 1) ? C_LTCYAN : C_LTBLUE;
+            shrine_pixel(px, py, c);
+            shrine_pixel(px + 1, py, c);
+        }
+        // Puddle at base
+        if (strikes > 0) {
+            int pw = strikes * 8; if (pw > 160) pw = 160;
+            shrine_fill_rect(rx - 60 - pw / 2, SCREEN_H - 40, pw, 4, C_LTBLUE);
+        }
+
+        char buf[32];
+        snprintf(buf, sizeof(buf), "STRIKES: %d / %d", strikes, NEEDED);
+        shrine_puts_centered(TEXT_ROWS - 3, buf, C_WHITE, C_BG);
+        shrine_puts_centered(TEXT_ROWS - 1, "A STRIKE   BOOT EXIT",
+                             C_LTGRAY, C_BG);
+
+        if (strikes >= NEEDED) {
+            shrine_puts_centered(15, "THE PEOPLE DRINK.", C_LTGREEN, C_BG);
+            shrine_puts_centered(17, "MOSES REJOICES.",  C_YELLOW,  C_BG);
+            shrine_beep(1800, 100);
+            shrine_beep(2200, 100);
+            shrine_beep(2600, 200);
+            // Wait for A to return
+            while (1) {
+                shrine_input_scan();
+                if (shrine_should_quit()) return;
+                if (shrine_key_pressed(BTN_A)) return;
+                shrine_sleep_ms(30);
+            }
+        }
+        shrine_sleep_ms(50);
+    }
+}
+
+// --- Battle scene ---
+// Terry's Battle: HACK_PERIOD (0.25s) rhythm combat with held_up state.
+// Our version: two lines of warriors, press A to attack on the beat,
+// scores casualties. Simple rhythm-timing mini-game.
+static void scene_battle(void)
+{
+    int ally = 12, enemy = 12;
+    int score_hit = 0, score_miss = 0;
+    uint32_t last_beat = shrine_ms();
+    uint32_t beat_period = 700;   // ms
+    bool  we_swing = false;
+    uint32_t swing_end = 0;
+
+    while (1) {
+        shrine_input_scan();
+        if (shrine_should_quit()) return;
+        uint32_t now = shrine_ms();
+
+        if (shrine_key_pressed(BTN_A) && ally > 0 && enemy > 0) {
+            // Timing: hit if within +/- 150ms of beat
+            uint32_t since = now - last_beat;
+            uint32_t until = beat_period - since;
+            uint32_t off = since < until ? since : until;
+            if (off < 150) {
+                enemy--;
+                score_hit++;
+                shrine_beep(1800, 40);
+                shrine_beep(2200, 60);
+            } else {
+                score_miss++;
+                shrine_beep(400, 60);
+            }
+            we_swing = true;
+            swing_end = now + 200;
+        }
+
+        // Beat advances; every 3 beats, enemy strikes back
+        if (now - last_beat > beat_period) {
+            last_beat = now;
+            static int beat_cnt = 0;
+            beat_cnt++;
+            if ((beat_cnt % 3 == 0) && ally > 0 && enemy > 0) {
+                ally--;
+                shrine_beep(300, 80);
+            }
+        }
+        if (now > swing_end) we_swing = false;
+
+        shrine_clear(C_BG);
+        shrine_puts_centered(1, "*  BATTLE  *", C_YELLOW, C_BG);
+        shrine_puts_centered(3, "TIME YOUR STRIKES", C_LTCYAN, C_BG);
+        for (int c = 1; c < TEXT_COLS - 1; c++)
+            shrine_putc(c, 5, G_HLINE[0], C_YELLOW, C_BG);
+
+        // Ally line (left) — small figures
+        for (int i = 0; i < ally; i++) {
+            int fx = 30 + i * 12;
+            shrine_fill_rect(fx, 100, 3, 18, C_LTGREEN);
+            shrine_fill_circle(fx + 1, 96, 3, C_LTGRAY);
+            // Sword tick when swinging
+            if (we_swing) shrine_line(fx + 3, 108, fx + 10, 100, C_YELLOW);
+        }
+        // Enemy line (right)
+        for (int i = 0; i < enemy; i++) {
+            int fx = SCREEN_W - 42 - i * 12;
+            shrine_fill_rect(fx, 100, 3, 18, C_LTRED);
+            shrine_fill_circle(fx + 1, 96, 3, C_DKGRAY);
+        }
+        // Beat indicator
+        uint32_t beat_pct = ((now - last_beat) * 100) / beat_period;
+        if (beat_pct > 100) beat_pct = 100;
+        int bar = (int)((100 - beat_pct) * SCREEN_W / 100);
+        shrine_fill_rect(0, 130, bar, 2, C_YELLOW);
+
+        char buf[48];
+        snprintf(buf, sizeof(buf), "ALLIES %2d   ENEMY %2d", ally, enemy);
+        shrine_puts_centered(20, buf, C_WHITE, C_BG);
+        snprintf(buf, sizeof(buf), "STRIKES  HIT %d   MISS %d", score_hit, score_miss);
+        shrine_puts_centered(22, buf, C_LTGRAY, C_BG);
+        shrine_puts_centered(TEXT_ROWS - 1, "A STRIKE   BOOT EXIT",
+                             C_LTGRAY, C_BG);
+
+        if (enemy == 0) {
+            shrine_puts_centered(15, "THE FIELD IS OURS.", C_LTGREEN, C_BG);
+            shrine_beep(2000, 100); shrine_beep(2400, 100); shrine_beep(2800, 200);
+            while (1) {
+                shrine_input_scan();
+                if (shrine_should_quit()) return;
+                if (shrine_key_pressed(BTN_A)) return;
+                shrine_sleep_ms(30);
+            }
+        }
+        if (ally == 0) {
+            shrine_puts_centered(15, "WE ARE ROUTED.", C_LTRED, C_BG);
+            shrine_beep(300, 200); shrine_beep(200, 300); shrine_beep(150, 400);
+            while (1) {
+                shrine_input_scan();
+                if (shrine_should_quit()) return;
+                if (shrine_key_pressed(BTN_A)) return;
+                shrine_sleep_ms(30);
+            }
+        }
+        shrine_sleep_ms(30);
+    }
+}
+
+// --- Quail scene ---
+// Terry's Quail: 128 quail flock sim with alive/dead states. Our
+// version: sky full of falling quail dots; player moves a small basket
+// with LEFT/RIGHT to catch them. 30-second round.
+#define QUAIL_N 60
+typedef struct { int x, y; int8_t vy; bool alive; } quail_t;
+static quail_t s_quail[QUAIL_N];
+
+static void scene_quail(void)
+{
+    for (int i = 0; i < QUAIL_N; i++) {
+        s_quail[i].x = (int)shrine_god(SCREEN_W - 8) + 4;
+        s_quail[i].y = -(int)shrine_god(SCREEN_H);
+        s_quail[i].vy = 1 + (int)shrine_god(3);
+        s_quail[i].alive = true;
+    }
+    int basket_x = SCREEN_W / 2;
+    int caught = 0;
+    uint32_t start = shrine_ms();
+    const uint32_t DUR_MS = 30000;
+
+    while (1) {
+        shrine_input_scan();
+        if (shrine_should_quit()) return;
+        uint32_t now = shrine_ms();
+        int elapsed = (int)((now - start) / 1000);
+        if (elapsed >= (int)(DUR_MS / 1000)) break;
+
+        if (shrine_key_held(BTN_LEFT))  basket_x -= 3;
+        if (shrine_key_held(BTN_RIGHT)) basket_x += 3;
+        if (basket_x < 14) basket_x = 14;
+        if (basket_x > SCREEN_W - 14) basket_x = SCREEN_W - 14;
+
+        // Fall + catch check
+        for (int i = 0; i < QUAIL_N; i++) {
+            if (!s_quail[i].alive) continue;
+            s_quail[i].y += s_quail[i].vy;
+            if (s_quail[i].y >= SCREEN_H - 20) {
+                // Basket catches within +/- 12
+                if (s_quail[i].x > basket_x - 12 && s_quail[i].x < basket_x + 12
+                    && s_quail[i].y < SCREEN_H - 10) {
+                    caught++;
+                    shrine_beep(1600 + caught * 20, 20);
+                }
+                // Respawn top
+                s_quail[i].x = (int)shrine_god(SCREEN_W - 8) + 4;
+                s_quail[i].y = -(int)shrine_god(40);
+                s_quail[i].vy = 1 + (int)shrine_god(3);
+            }
+        }
+
+        shrine_clear(C_BG);
+        shrine_puts_centered(1, "*  QUAIL  *", C_YELLOW, C_BG);
+        shrine_puts_centered(3, "MEAT FALLS FROM HEAVEN", C_LTCYAN, C_BG);
+
+        // Draw quail as small yellow blobs
+        for (int i = 0; i < QUAIL_N; i++) {
+            if (!s_quail[i].alive) continue;
+            if (s_quail[i].y < 30 || s_quail[i].y > SCREEN_H) continue;
+            shrine_fill_rect(s_quail[i].x - 1, s_quail[i].y, 3, 2, C_YELLOW);
+            shrine_pixel(s_quail[i].x, s_quail[i].y - 1, C_BROWN);
+        }
+        // Ground line
+        shrine_hline(0, SCREEN_H - 20, SCREEN_W, C_BROWN);
+        // Basket
+        shrine_fill_rect(basket_x - 12, SCREEN_H - 20, 24, 10, C_BROWN);
+        shrine_hline(basket_x - 12, SCREEN_H - 22, 24, C_YELLOW);
+
+        char buf[32];
+        snprintf(buf, sizeof(buf), "CAUGHT %d   T-%02d", caught,
+                 (int)(DUR_MS / 1000) - elapsed);
+        shrine_puts_centered(TEXT_ROWS - 1, buf, C_WHITE, C_BG);
+        shrine_sleep_ms(30);
+    }
+
+    // Round end
+    shrine_clear(C_BG);
+    shrine_puts_centered(10, "* THE PEOPLE ARE FED *", C_LTGREEN, C_BG);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "CAUGHT %d QUAIL", caught);
+    shrine_puts_centered(13, buf, C_WHITE, C_BG);
+    shrine_puts_centered(20, "A  RETURN", C_LTGRAY, C_BG);
+    shrine_beep(2000, 100); shrine_beep(2400, 100); shrine_beep(2800, 200);
+    while (1) {
+        shrine_input_scan();
+        if (shrine_should_quit()) return;
+        if (shrine_key_pressed(BTN_A)) return;
+        shrine_sleep_ms(30);
+    }
+}
+
 // --- Stub scenes (flesh out one at a time in follow-up commits) ---
 static void scene_stub(const char *title, const char *evocative)
 {
@@ -358,9 +636,9 @@ void game_afteregypt_run(void)
             case SC_CLOUDS: scene_stub("VIEW CLOUDS",   "SIGNS IN THE SKY");       break;
             case SC_MAP:    scene_stub("VIEW MAP",      "THE WILDERNESS BEFORE YOU"); break;
             case SC_CAMP:   scene_stub("BREAK CAMP",    "THE PEOPLE PREPARE");     break;
-            case SC_WATER:  scene_stub("WATER ROCK",    "STRIKE THE ROCK");        break;
-            case SC_BATTLE: scene_stub("BATTLE",        "SWORDS ARE DRAWN");       break;
-            case SC_QUAIL:  scene_stub("QUAIL",         "MEAT FALLS FROM HEAVEN"); break;
+            case SC_WATER:  scene_water();  break;
+            case SC_BATTLE: scene_battle(); break;
+            case SC_QUAIL:  scene_quail();  break;
             case SC_HOREB:  scene_stub("MT HOREB",      "THE MOUNTAIN OF GOD");    break;
             default: break;
             }
