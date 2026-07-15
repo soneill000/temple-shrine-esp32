@@ -19,9 +19,11 @@
 #include "font8x8.h"
 #include "vocab.h"
 #include "display.h"
+#include "templeshim.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 // --- Off-screen framebuffer, shared with other scenes (see scene_fb.h).
 // Composed in memory then pushed as ONE SPI transaction via
@@ -680,6 +682,184 @@ static void scene_quail(void)
     }
 }
 
+// --- View Clouds scene ---
+// Direct-port from Terry's Clouds.HC using the new TempleShim (CDC +
+// Gr* API). Terry's original uses multi-processor rendering across
+// mp_cnt cores; we run single-core sequentially. Terry's 16 clouds x
+// 512 dots become 8 clouds x 128 dots here to fit RAM comfortably.
+// Coordinates below are in Terry's 640x480 space — gr_dc.scale=2
+// takes care of the /2 on write into our 320x240 fb.
+
+#define AE_CLOUDS_NUM     8
+#define AE_CLOUD_PTS      128
+#define AE_CLOUD_PENS     8
+#define AE_CLOUD_PEN_PTS  12
+#define AE_CLOUD_PEN_SIZE 12
+#define AE_SKY_HEIGHT     (30 * 8)     // Terry uses SKY_LINES * FONT_HEIGHT
+
+typedef struct {
+    float    x, y, dx, dy;
+    int      w, h;
+    uint16_t color;
+    int16_t  px[AE_CLOUD_PTS];
+    int16_t  py[AE_CLOUD_PTS];
+    uint16_t pc[AE_CLOUD_PTS];
+} ae_cloud_t;
+
+typedef struct {
+    int8_t px[AE_CLOUD_PEN_PTS];
+    int8_t py[AE_CLOUD_PEN_PTS];
+} ae_cloud_pen_t;
+
+static ae_cloud_t     s_clouds[AE_CLOUDS_NUM];
+static ae_cloud_pen_t s_pens[AE_CLOUD_PENS];
+
+// Cheap Gaussian-ish sample: sum of 6 signed uniform samples,
+// matching Terry's SAMPLES=6 in Init().
+static int16_t gauss6(int scale_i16)
+{
+    int32_t k = 0;
+    for (int j = 0; j < 6; j++) k += (int32_t)((int16_t)shrine_god(65536));
+    return (int16_t)((k * scale_i16) / (32767 * 6));
+}
+
+static void clouds_init(void)
+{
+    int W = 640, H = AE_SKY_HEIGHT;   // Terry-space dimensions
+    for (int i = 0; i < AE_CLOUDS_NUM; i++) {
+        ae_cloud_t *c = &s_clouds[i];
+        float r1 = ((float)shrine_god(1000) / 500.0f) - 1.0f;   // -1..+1
+        float r2 = ((float)shrine_god(1000) / 500.0f) - 1.0f;
+        c->x  = W / 2.0f + r1 * W / 4.0f;
+        c->y  = H / 2.0f + r2 * H / 4.0f;
+        c->dx = ((float)shrine_god(1000) / 500.0f) - 1.0f;   // ~ Terry's RandI32 scaled
+        c->dy = ((float)shrine_god(1000) / 500.0f) - 1.0f;
+        c->w  = 100; c->h = 50;
+        c->color = (uint16_t)shrine_god(65536);
+        for (int l = 0; l < AE_CLOUD_PTS; l++) {
+            c->px[l] = gauss6(c->w);
+            c->py[l] = gauss6(c->h);
+            c->pc[l] = (uint16_t)shrine_god(65536);
+        }
+    }
+    for (int i = 0; i < AE_CLOUD_PENS; i++) {
+        for (int j = 0; j < AE_CLOUD_PEN_PTS; j++) {
+            s_pens[i].px[j] = (int8_t)shrine_god(AE_CLOUD_PEN_SIZE);
+            s_pens[i].py[j] = (int8_t)shrine_god(AE_CLOUD_PEN_SIZE);
+        }
+    }
+}
+
+// Terry's AnimateTask body (single-tick): jitter pen dots, drift clouds.
+static void clouds_animate(void)
+{
+    for (int i = 0; i < AE_CLOUD_PENS; i++) {
+        ae_cloud_pen_t *p = &s_pens[i];
+        for (int j = 0; j < AE_CLOUD_PEN_PTS; j++) {
+            int nx = p->px[j] + (int)shrine_god(3) - 1;
+            int ny = p->py[j] + (int)shrine_god(3) - 1;
+            if (nx < 0) nx = 0; if (nx >= AE_CLOUD_PEN_SIZE) nx = AE_CLOUD_PEN_SIZE - 1;
+            if (ny < 0) ny = 0; if (ny >= AE_CLOUD_PEN_SIZE) ny = AE_CLOUD_PEN_SIZE - 1;
+            p->px[j] = (int8_t)nx; p->py[j] = (int8_t)ny;
+        }
+    }
+    for (int i = 0; i < AE_CLOUDS_NUM; i++) {
+        ae_cloud_t *c = &s_clouds[i];
+        c->x += c->dx;
+        c->y += c->dy;
+        float ylo = 0, yhi = 0.7f * AE_SKY_HEIGHT;
+        if (c->y < ylo) c->y = ylo;
+        if (c->y > yhi) c->y = yhi;
+        // Wrap x horizontally
+        if (c->x < -200) c->x = 640 + 100;
+        if (c->x > 640 + 200) c->x = -100;
+        c->color = (uint16_t)(65535.0f * c->y / (0.8f * AE_SKY_HEIGHT));
+    }
+}
+
+// Terry's DrawIt body: for each cloud, for each dot, blot a pen.
+static void clouds_drawit(void)
+{
+    for (int j = 0; j < AE_CLOUDS_NUM; j++) {
+        ae_cloud_t *c = &s_clouds[j];
+        for (int i = 0; i < AE_CLOUD_PTS; i++) {
+            uint16_t k = c->pc[i];
+            gr_dc.color = (k < c->color) ? C_LTGRAY : C_WHITE;
+
+            int xx = (int)c->x + c->px[i];
+            int yy = (int)c->y + c->py[i];
+
+            // Jitter dot ±16, with occasional pull-back-to-center.
+            int kx = (int)shrine_god(32) - 16;
+            if (kx == -16) kx = -c->px[i];
+            c->px[i] += (kx > 0) - (kx < 0);
+            int ky = (int)shrine_god(32) - 16;
+            if (ky == -16) ky = -c->py[i];
+            c->py[i] += (ky > 0) - (ky < 0);
+
+            // GrBlot substitute: stamp the current pen's dots at (xx, yy).
+            ae_cloud_pen_t *p = &s_pens[i & (AE_CLOUD_PENS - 1)];
+            for (int q = 0; q < AE_CLOUD_PEN_PTS; q++) {
+                GrPlot(&gr_dc, xx + p->px[q], yy + p->py[q]);
+            }
+        }
+    }
+}
+
+static void scene_clouds(void)
+{
+    // Hook the shim into our shared framebuffer, scale=2 for 640->320.
+    CDCInit(g_scene_fb, SCREEN_W, SCREEN_H, 2);
+    clouds_init();
+
+    uint32_t last = shrine_ms();
+    while (1) {
+        shrine_input_scan();
+        if (shrine_should_quit()) return;
+        if (shrine_key_pressed(BTN_A)) return;
+
+        uint32_t now = shrine_ms();
+        if (now - last > 20) { clouds_animate(); last = now; }
+
+        // Sky background — Terry uses LTCYAN
+        gr_dc.color = C_LTCYAN;
+        DCFill(&gr_dc);
+
+        // Procedural mountain silhouette (Terry loads it as a sprite;
+        // we approximate with brown zig-zag ridges into Terry-space
+        // coordinates — the shim scales for us).
+        gr_dc.color = C_BROWN;
+        gr_dc.thick = 2;
+        int base_y = (int)(0.68f * AE_SKY_HEIGHT);
+        int cx640  = 320;
+        int steps[] = { 120, -110, 90, -80, 70, -60, 45, -30, 0 };
+        int drops[] = {  25,  22, 20, 18, 15, 12, 10,  8, 0 };
+        int lx = cx640, ly = base_y;
+        for (unsigned k = 0; k < sizeof(steps)/sizeof(steps[0]) - 1; k++) {
+            int nx = cx640 + steps[k];
+            int ny = ly - drops[k];
+            GrLine(&gr_dc, lx, ly, nx, ny);
+            lx = nx; ly = ny;
+        }
+        gr_dc.thick = 1;
+
+        // Clouds via the port of Terry's DrawIt.
+        clouds_drawit();
+
+        // Yellow header bar (Terry sets BG YELLOW for one line) + title.
+        gr_dc.color = C_YELLOW;
+        GrFillRect(&gr_dc, 0, 0, 640, 20);
+        gr_dc.color = C_BLACK;
+        GrPrint(&gr_dc, 220, 4, "VIEW CLOUDS");
+        GrPrint(&gr_dc, 200, 460, "SEE EXODUS 14:19");
+        gr_dc.color = C_LTGRAY;
+        GrPrint(&gr_dc, 20, 460, "PRESS A OR BOOT TO RETURN");
+
+        DCPresent(&gr_dc);
+        shrine_sleep_ms(40);
+    }
+}
+
 // --- Stub scenes (flesh out one at a time in follow-up commits) ---
 static void scene_stub(const char *title, const char *evocative)
 {
@@ -730,7 +910,7 @@ void game_afteregypt_run(void)
             switch (MENU[s_sel].id) {
             case SC_COURT:  scene_court(); break;
             case SC_GOD:    scene_god();   break;
-            case SC_CLOUDS: scene_stub("VIEW CLOUDS",   "SIGNS IN THE SKY");       break;
+            case SC_CLOUDS: scene_clouds(); break;
             case SC_MAP:    scene_stub("VIEW MAP",      "THE WILDERNESS BEFORE YOU"); break;
             case SC_CAMP:   scene_stub("BREAK CAMP",    "THE PEOPLE PREPARE");     break;
             case SC_WATER:  scene_water();  break;
