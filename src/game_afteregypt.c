@@ -2552,23 +2552,14 @@ static void draw_ae_emblem_grdc(int cx, int cy, int half)
 // scene bottom lands near y=472. Sprite3 walks the opcode stream
 // through templeshim, which scales down to the 320x240 badge fb via
 // gr_dc.scale=2 (set in the trailer's CDCInit above).
-//
-// The bitmap has a mountain silhouette baked into its upper region that
-// the user recalls Terry's actual splash didn't have — everything below
-// (Moses, ground, ambient art) was right. So we draw the sprite, then
-// paint LTCYAN over the mountain band (Terry y=0..170) to mask the
-// silhouette while keeping the lower composition intact.
 static void trailer_paint_backdrop(uint32_t now)
 {
     (void)now;
+    // One draw call — Terry's literal splash art. No composition, no
+    // homage: the pixels are his. The four TMsg lines get overlaid on
+    // top by trailer_paint_msg().
     Sprite3(&gr_dc, 0, 0, 0,
             SPRITE_AESPLASH_BI_1, SPRITE_AESPLASH_BI_1_SIZE);
-    // Mask the mountain band. Range covers roughly the sprite's mountain
-    // silhouette without touching Moses' head or the horizon; tune the
-    // 170 up if any real art gets clipped, or down if a mountain peak
-    // pokes through.
-    gr_dc.color = C_LTCYAN;
-    GrFillRect(&gr_dc, 0, 0, 640, 170);
 }
 
 // Terry's TMsg — 16 Terry-px tall bordered box, blinking red/black
