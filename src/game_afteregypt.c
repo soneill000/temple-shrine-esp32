@@ -2546,24 +2546,29 @@ static void draw_ae_emblem_grdc(int cx, int cy, int half)
     }
 }
 
-// AESplash backdrop — plain LTCYAN sky + YELLOW ground.
+// Terry's real AESplash artwork, extracted from canewsin's aiwnios
+// dump of the AfterEgypt app (iso/apps/afteregypt/aesplash.txt.z). One
+// SPT_BITMAP at 640x589 Terry pixels, anchor offset (0, -117) so the
+// scene bottom lands near y=472. Sprite3 walks the opcode stream
+// through templeshim, which scales down to the 320x240 badge fb via
+// gr_dc.scale=2 (set in the trailer's CDCInit above).
 //
-// We do have Terry's extracted AESplash bitmap (canewsin aiwnios dump,
-// SPT_BITMAP 640x589), but it contains an elaborate mountain scene that
-// doesn't match the user's memory of Terry's actual splash rendering —
-// they recall it as classic Terry: yellow ground, blue sky, four TMsg
-// lines on top. So we paint the two rects manually and skip the sprite.
+// The bitmap has a mountain silhouette baked into its upper region that
+// the user recalls Terry's actual splash didn't have — everything below
+// (Moses, ground, ambient art) was right. So we draw the sprite, then
+// paint LTCYAN over the mountain band (Terry y=0..170) to mask the
+// silhouette while keeping the lower composition intact.
 static void trailer_paint_backdrop(uint32_t now)
 {
     (void)now;
-    // Terry's canvas is 640x480. Horizon around 3/8 of the way down so
-    // there's more sky than ground — reads as "wilderness sky over
-    // desert" at a glance.
-    const int horizon = 180;
+    Sprite3(&gr_dc, 0, 0, 0,
+            SPRITE_AESPLASH_BI_1, SPRITE_AESPLASH_BI_1_SIZE);
+    // Mask the mountain band. Range covers roughly the sprite's mountain
+    // silhouette without touching Moses' head or the horizon; tune the
+    // 170 up if any real art gets clipped, or down if a mountain peak
+    // pokes through.
     gr_dc.color = C_LTCYAN;
-    GrFillRect(&gr_dc, 0, 0, 640, horizon);
-    gr_dc.color = C_YELLOW;
-    GrFillRect(&gr_dc, 0, horizon, 640, 480 - horizon);
+    GrFillRect(&gr_dc, 0, 0, 640, 170);
 }
 
 // Terry's TMsg — 16 Terry-px tall bordered box, blinking red/black

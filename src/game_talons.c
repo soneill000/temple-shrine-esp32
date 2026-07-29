@@ -539,62 +539,67 @@ static void RenderFish(int horizon)
 #define TALON_SWOOP_MS   1400u
 #define TALON_RISE_MS     350u
 #define TALON_RETRACT_MS  350u
-#define TALON_TRUNK_H      68     // height of the visible foot trunk when fully deployed
-#define TALON_CLAW_H       26     // height of the claw fingers above the trunk top
-#define TALON_TRUNK_HALF_W 22     // half-width of foot trunk
+// Talon proportions match Terry's screenshot: thin bird-leg trunks that
+// widen toward the foot, small claws on top. Trunk bottom is pinned to
+// SCREEN_H so the feet stay attached to the panel edge instead of
+// floating in mid-air.
+#define TALON_TRUNK_H      52     // height of the visible foot trunk when fully deployed
+#define TALON_CLAW_H       22     // height of the claw fingers above the trunk top
+#define TALON_TRUNK_HALF_W 8      // half-width at the top of the trunk (leg)
 
-static void draw_one_foot(int fx, int fy_top, float grip)
+// Draw one talon foot whose highest visible pixel (top of the claws)
+// is at fy_claws_top. The trunk bottom is ALWAYS pinned to SCREEN_H so
+// the foot stays affixed to the panel edge no matter the swoop phase.
+// grip in [0,1] curls the claw tips slightly inward for the grab feel.
+static void draw_one_foot(int fx, int fy_claws_top, float grip)
 {
-    // fy_top is the y-coord of the highest point of the trunk (below the
-    // claws). If fy_top >= SCREEN_H, the foot is fully off-screen.
-    if (fy_top >= SCREEN_H) return;
+    if (fy_claws_top >= SCREEN_H) return;
 
     uint16_t yel   = C(C_YELLOW);
     uint16_t brown = C(C_BROWN);
     uint16_t black = C(C_BLACK);
 
-    // ---- Trunk: fat yellow leg with horizontal segment banding ----
-    int trunk_bottom = fy_top + TALON_TRUNK_H;
-    if (trunk_bottom > SCREEN_H) trunk_bottom = SCREEN_H;
-    for (int y = fy_top; y < trunk_bottom; y++) {
-        if (y < 0) continue;
-        // Trunk widens slightly toward the bottom (ankle to foot).
-        int extra = (y - fy_top) / 6;
+    // Trunk visible from just below the claw base down to SCREEN_H.
+    int fy_trunk_top = fy_claws_top + TALON_CLAW_H;
+    if (fy_trunk_top < 0) fy_trunk_top = 0;
+
+    // ---- Trunk: thin yellow bird leg, widens gently toward the foot ----
+    for (int y = fy_trunk_top; y < SCREEN_H; y++) {
+        int dyy   = y - fy_trunk_top;
+        int extra = dyy / 8;
         int half  = TALON_TRUNK_HALF_W + extra;
         fb_hline(fx - half, y, half * 2, yel);
-        // Segment shading — a darker-yellow (brown) band every 8 px.
-        if (((y - fy_top) % 8) == 0 && y != fy_top) {
-            fb_hline(fx - half + 2, y, half * 2 - 4, brown);
+        // Faint brown segment band every 10 px so the trunk reads scaly.
+        if (dyy > 0 && (dyy % 10) == 0) {
+            fb_hline(fx - half + 1, y, half * 2 - 2, brown);
         }
-        // Trunk outline in black on the outer edges (readable against sky).
+        // Black side outline for readability against sky/terrain.
         fb_pixel(fx - half - 1, y, black);
         fb_pixel(fx + half,     y, black);
     }
 
-    // ---- Claws: 4 curved yellow fingers rising above the trunk top ----
-    // Positions are relative to trunk center. Outer claws curve outward,
-    // inner claws point ~straight up. `grip` in [0,1] curls tips inward
-    // to sell the grab motion.
-    static const int CLAW_OFF[4] = { -18, -6, 6, 18 };
-    static const int CLAW_DIR[4] = {  -1,  0, 0,  1 }; // outward bias
-    for (int i = 0; i < 4; i++) {
-        int base_x = fx + CLAW_OFF[i];
-        int base_y = fy_top;
-        int tip_x  = base_x + (int)(CLAW_DIR[i] * 4 * (1.0f - grip))
-                             - (int)(CLAW_DIR[i] * 4 * grip);
-        int tip_y  = base_y - TALON_CLAW_H;
-        // Draw as a tapered triangle in yellow, brown tip.
+    // ---- Claws: 3 thin curved fingers above the trunk top ----
+    // Fewer + narrower claws than v1 so the foot silhouette reads as a
+    // bird claw, not a chicken drumstick.
+    static const int CLAW_OFF[3] = { -6, 0, 6 };
+    static const int CLAW_DIR[3] = { -1, 0, 1 };  // outward bias, inner is straight
+    for (int i = 0; i < 3; i++) {
+        int base_x  = fx + CLAW_OFF[i];
+        int base_y  = fy_trunk_top;
+        // Grip curls outer claws inward (toward center) during the hold.
+        int tip_x   = base_x + (int)(CLAW_DIR[i] * 3 * (1.0f - grip))
+                             - (int)(CLAW_DIR[i] * 3 * grip);
+        int tip_y   = base_y - TALON_CLAW_H;
         for (int r = 0; r <= TALON_CLAW_H; r++) {
-            float t = (float)r / (float)TALON_CLAW_H;  // 0=base, 1=tip
+            float t = (float)r / (float)TALON_CLAW_H;
             int cx_ = base_x + (int)((tip_x - base_x) * t);
-            int half = (int)(6 * (1.0f - t));
+            int half = (int)(3 * (1.0f - t));
             if (half < 1) half = 1;
             int y = base_y - r;
             if (y < 0 || y >= SCREEN_H) continue;
             fb_hline(cx_ - half, y, half * 2 + 1,
-                     (t > 0.75f) ? brown : yel);
+                     (t > 0.7f) ? brown : yel);
         }
-        // Sharp black outline at the tip point.
         if (tip_y >= 0 && tip_y < SCREEN_H) {
             fb_pixel(tip_x,     tip_y,     black);
             fb_pixel(tip_x - 1, tip_y + 1, black);
@@ -609,40 +614,36 @@ static void draw_talons_swoop(uint32_t now)
     uint32_t elapsed = now - s_talon_swoop_ms;
     if (elapsed >= TALON_SWOOP_MS) { s_talon_swoop_ms = 0; return; }
 
-    // The "off-screen" position anchors trunk top at SCREEN_H (nothing
-    // visible). Fully deployed puts trunk top at SCREEN_H - (TRUNK_H
-    // + CLAW_H + 8) so claws are ~mid-lower-panel.
-    const int off_y_top = SCREEN_H;
-    const int on_y_top  = SCREEN_H - (TALON_TRUNK_H + TALON_CLAW_H + 12);
-    int y_top;
+    // "Off-screen" = claws top at SCREEN_H (trunk_top would be below
+    // panel too, so nothing draws). Fully deployed puts the claws top
+    // at SCREEN_H - (TRUNK_H + CLAW_H), keeping the trunk bottom pinned
+    // to the panel edge — feet stay affixed, no floating.
+    const int off_claws_top = SCREEN_H;
+    const int on_claws_top  = SCREEN_H - (TALON_TRUNK_H + TALON_CLAW_H);
+    int claws_top;
     float grip = 0.0f;
     if (elapsed < TALON_RISE_MS) {
-        // Rise: ease-out from off to on.
         float t = (float)elapsed / (float)TALON_RISE_MS;
-        // Simple quadratic ease-out (1 - (1-t)^2).
         float e = 1.0f - (1.0f - t) * (1.0f - t);
-        y_top = off_y_top + (int)((on_y_top - off_y_top) * e);
+        claws_top = off_claws_top + (int)((on_claws_top - off_claws_top) * e);
         grip = t * 0.2f;
     } else if (elapsed < TALON_SWOOP_MS - TALON_RETRACT_MS) {
-        // Hold: fully deployed; grip curls toward peak.
         float t = (float)(elapsed - TALON_RISE_MS)
                 / (float)(TALON_SWOOP_MS - TALON_RISE_MS - TALON_RETRACT_MS);
-        y_top = on_y_top;
+        claws_top = on_claws_top;
         grip = 0.2f + 0.6f * t;
     } else {
-        // Retract: linear back to off.
         float t = (float)(elapsed - (TALON_SWOOP_MS - TALON_RETRACT_MS))
                 / (float)TALON_RETRACT_MS;
-        y_top = on_y_top + (int)((off_y_top - on_y_top) * t);
+        claws_top = on_claws_top + (int)((off_claws_top - on_claws_top) * t);
         grip = 0.8f - 0.8f * t;
     }
 
-    // Two feet: left at 1/3, right at 2/3. Terry's screenshot has them
-    // roughly at those thirds.
+    // Two feet at 1/3 and 2/3 of the panel width (Terry's screenshot).
     int lx = SCREEN_W / 3;
     int rx = SCREEN_W - SCREEN_W / 3;
-    draw_one_foot(lx, y_top, grip);
-    draw_one_foot(rx, y_top, grip);
+    draw_one_foot(lx, claws_top, grip);
+    draw_one_foot(rx, claws_top, grip);
 }
 
 // -----------------------------------------------------------------------
