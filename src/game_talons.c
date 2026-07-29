@@ -1,17 +1,57 @@
-// game_talons.c — Tier 2 Talons: voxel-terrain flight demo.
+// game_talons.c — literal port of Terry A. Davis's TempleOS "EagleDive"
+// (iso/demo/games/eagledive.cpp.z from the public-domain TempleOS ISO).
 //
-// v2 changes:
-//   1. Compose the frame in an off-screen RGB565 buffer, then push it
-//      to the panel in ONE SPI transaction. The v1 render fired ~1500
-//      tiny fill_rects per frame, each an SPI transaction whose overhead
-//      dominated the actual pixel push. Now the transactions are ~1.
-//   2. Direct RGB565 colors — not palette-indexed — with 8 height bands
-//      and 4 distance bands (32 total), so we can express water-shallow-
-//      grass-hills-rock-snow AND the atmospheric-perspective darkening
-//      Terry gets from his 8-bit palette. Distant land shifts toward a
-//      cold haze; near land stays vivid.
-//   3. Small text renderer that writes directly into the framebuffer so
-//      the HUD ships in the same present.
+// Terry's original is a multi-core panel renderer over a 1024x1024
+// procedurally-generated island world. You fly a plane; arrows tilt
+// pitch/roll/yaw; you catch fish by diving into water where fish were
+// randomly spawned during map generation. Diving into non-water terrain
+// = game over. Speed increases when nose is down, decreases when up.
+//
+// -----------------------------------------------------------------------
+// CONCESSIONS (documented, not invented mechanics)
+// -----------------------------------------------------------------------
+//   * Terry's rendering: he merges same-slope grid squares into Panels,
+//     then multi-core rasterizes filled 3D polygons with GrFillPoly3
+//     into a Z-buffered CDC. The badge is single-core ESP32-S3, no
+//     polygon rasterizer, no Z-buffer, and merging 1024*1024 quads at
+//     240 MHz would blow the frame budget by an order of magnitude.
+//     We keep Terry's elevation grid, his water/rock/snow bands, his
+//     fish spawn probability, his speed dynamics, his controls, his
+//     game-over condition, his best-score persistence -- but we render
+//     the terrain by per-column raycast (the only technique that fits
+//     the badge's compute). This is the same concession every voxel
+//     port on constrained hardware makes.
+//   * MAP_WIDTH/MAP_HEIGHT: Terry uses 1024x1024. We use 256x256 -- a
+//     quarter of Terry's grid in each axis, because 1024x1024*I16 =
+//     2 MiB of PSRAM just for elevations, and the badge has 2 MiB
+//     total PSRAM shared with the framebuffer and other scenes.
+//     All other constants (MAP_SCALE, WATER_ELEVATION, ROCK_ELEVATION,
+//     SNOW_ELEVATION, CTRLS_SCALE, catch radius, fish spawn rate,
+//     speed increments) are Terry's exact values.
+//   * Fish sprite: Terry uses $IB,"<1>",BI=1$ -- a 144-byte vector
+//     sprite in the source's DolDoc tail (SPT_COLOR MAGENTA, SPT_THICK
+//     2, then 8 SPT_LINE segments outlining his fish). We now extract
+//     it (see sprite_eagledive.h BI=1) and render it through
+//     templeshim's Sprite3S in draw_fish_sprite -- literal Terry pixels
+//     instead of the earlier procedural 8x8 stand-in.
+//   * Audio: Terry has a background music task playing a repeating
+//     melody, plus Snd(1000) on fish catch and Beep on death. We keep
+//     the catch and death beeps; we skip the music loop (no background
+//     tasks on our single core during a render-bound scene).
+//   * Controls: Terry uses arrow keys with the peculiar mapping
+//         DOWN:  theta  += -CTRLS_SCALE * cos(theta1)
+//                theta2 += -CTRLS_SCALE * sin(theta1) * sin(theta)
+//         UP:    theta  -= -CTRLS_SCALE * cos(theta1)  ... etc
+//         RIGHT: theta1 += CTRLS_SCALE
+//         LEFT:  theta1 -= CTRLS_SCALE
+//     -- we replicate this literally. It's an intentionally weird
+//     coupling where your roll (theta1) affects how pitch input maps
+//     to pitch vs yaw. Terry intended this to make banking turns
+//     feel plane-like.
+//
+// -----------------------------------------------------------------------
+// Terry's constants (verbatim from eagledive.cpp.z)
+// -----------------------------------------------------------------------
 
 #include "games.h"
 #include "shrine.h"
@@ -19,128 +59,156 @@
 #include "palette.h"
 #include "font8x8.h"
 #include "display.h"
+#include "templeshim.h"
+// Auto-generated from canewsin/templeos-1's aiwnios EagleDive tail via
+// tools/extract_sprite_tail_aiwnios.py.
+// BI=1: Terry's actual fish sprite — a 144-byte SPT_COLOR/SPT_LINE
+//       vector stream that draws his ~50x75 magenta fish outline.
+// BI=2: 161x145 SPT_BITMAP (grid-frame graphic in a source /*...*/
+//       block; not drawn by Terry's EagleDive itself — see comment
+//       near RenderHUD's talons removal below).
+// BI=3: 273x261 SPT_BITMAP (similarly unused decorative panel).
+#include "sprite_eagledive.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
 
-// --- Framebuffer: shared with other scenes (see scene_fb.h) ---
 #include "scene_fb.h"
 #define s_fb g_scene_fb
 
-// Build an RGB565 word from 5/6/5-bit channels.
 #define RGB(r5, g6, b5) (uint16_t)(((r5) << 11) | ((g6) << 5) | (b5))
 
-// --- Heightmap ---
-#define HM_SIZE   128
-#define HM_MASK   (HM_SIZE - 1)
-static uint8_t s_hm[HM_SIZE * HM_SIZE];
+// ----- Terry's #defines (see lines 6-25 of eagledive.cpp.z) -----
+// Terry: "Keep these power of two so shift is used instead of multiply
+// to index arrays."
+//
+// Concession: 1024*1024 would use 2 MiB PSRAM just for the I16
+// elevation grid. Downscaled to 256x256 to fit; still power of two
+// so shift-indexing works. All *dependent* constants (SCALE, elevation
+// thresholds) are Terry's exact numbers.
+#define MAP_WIDTH       256
+#define MAP_HEIGHT      256
+#define MAP_MASK        (MAP_WIDTH - 1)
 
-static inline int hm_get(int wx, int wz)
+#define MAP_SCALE       150     // Terry
+#define DISPLAY_SCALE   100     // Terry (used in his EDTransform foreshortening)
+#define CTRLS_SCALE     0.05f   // Terry
+
+// Terry: "I think I did these so the heads-up showed intelligable numbers.
+// Scaling is a mess."
+#define COORDINATE_SCALE 256
+#define COORDINATE_BITS  8
+
+#define WATER_ELEVATION  15     // Terry
+#define ROCK_ELEVATION   45     // Terry
+#define SNOW_ELEVATION   55     // Terry
+
+// Terry: "Too big makes off-screen draws take place." -- not used in
+// our raycast port but retained as documentation.
+#define MAX_PANEL_SIZE   16
+
+// -----------------------------------------------------------------------
+// Elevations[][] -- Terry's I16 grid, generated by his InitElevations()
+// algorithm literally translated below.
+// -----------------------------------------------------------------------
+static int16_t elevations[MAP_HEIGHT][MAP_WIDTH];
+
+// -----------------------------------------------------------------------
+// Fish list. Terry uses a doubly-linked list rooted at fish_root; each
+// fish has p.x, p.y, p.z (world coords in Terry's MAP_SCALE units).
+// We use a fixed array; the plane-vs-fish catch test is Terry's exact
+// SqrI64() distance formula.
+// -----------------------------------------------------------------------
+#define MAX_FISH  64
+typedef struct { int64_t x, y, z; bool alive; } Fish;
+static Fish   fish[MAX_FISH];
+static int    fish_count;
+static int    game_score;
+static int    best_score;   // Terry persists via AcctRegWriteBranch;
+                            // we just keep it static across restarts.
+
+// -----------------------------------------------------------------------
+// Camera state. Terry's names: x,y,z (world position in
+// COORDINATE_SCALE * MAP_SCALE units), theta (pitch), theta1 (yaw/roll),
+// theta2 (roll). We use ASCII names but keep his semantics.
+// -----------------------------------------------------------------------
+static int64_t cam_x, cam_y, cam_z;
+static float   theta;   // Terry: theta  (pitch, initialized -90 deg)
+static float   theta1;  // Terry: theta1 (yaw,   initialized   0 deg)
+static float   theta2;  // Terry: theta2 (roll,  initialized   0 deg)
+static float   speed;   // Terry: speed  (initialized 2.5)
+static bool    game_over;
+static uint32_t game_t0_ms;
+
+// -----------------------------------------------------------------------
+// Small RNG wrappers matching Terry's names.
+// -----------------------------------------------------------------------
+static inline uint32_t RandU32(void)   { return shrine_god(0x7fffffff); }
+static inline uint16_t RandU16(void)   { return (uint16_t)shrine_god(0x10000); }
+static inline int16_t  RandI16(void)   { return (int16_t)shrine_god(0x10000); }
+static inline float    RandF(void)     { return (float)shrine_god(100000) / 100000.0f; }
+
+// Terry's Wrap: keep angle in (-pi, pi].
+static inline float Wrap(float a)
 {
-    return s_hm[((wz & HM_MASK) << 7) | (wx & HM_MASK)];
+    const float PI  = 3.14159265f;
+    const float TAU = 6.28318531f;
+    while (a >   PI) a -= TAU;
+    while (a <= -PI) a += TAU;
+    return a;
 }
+static inline int   ClampI(int v, int lo, int hi) { return v<lo?lo:(v>hi?hi:v); }
+static inline float ClampF(float v, float lo, float hi){ return v<lo?lo:(v>hi?hi:v); }
+static inline int64_t SqrI64(int64_t v) { return v * v; }
+static inline int   Abs_i(int v)   { return v < 0 ? -v : v; }
+static inline float Abs_f(float v) { return v < 0 ? -v : v; }
 
-// --- Terrain LUT: [height_band][distance_band] ---
-// Height bands (H): 0 deep water, 1 shallows, 2 beach, 3 grass low,
-// 4 grass hi, 5 foothills, 6 rock, 7 snow.
-// Distance bands (D): 0 near, 1 mid, 2 far, 3 farthest — each column
-// keeps its family (blues stay blue, greens stay green, etc.) and just
-// dims. Previous version pulled everything toward a cold blue-gray at
-// distance, which made mountains and sky and water all read the same.
-static const uint16_t TERRAIN[8][4] = {
-    /* 0 deep water   */ { RGB( 3,10,22), RGB( 3, 8,19), RGB( 3, 7,16), RGB( 3, 6,14) },
-    /* 1 shallows     */ { RGB( 8,36,26), RGB( 7,30,22), RGB( 6,24,20), RGB( 5,18,18) },
-    /* 2 beach        */ { RGB(30,44,14), RGB(26,38,12), RGB(22,32,12), RGB(18,26,12) },
-    /* 3 grass low    */ { RGB( 8,48, 4), RGB( 6,40, 4), RGB( 5,32, 4), RGB( 5,26, 6) },
-    /* 4 grass hi     */ { RGB(16,54,10), RGB(13,46, 8), RGB(11,38, 8), RGB(10,30, 8) },
-    /* 5 foothills    */ { RGB(22,32,10), RGB(19,26, 8), RGB(16,22, 8), RGB(13,18, 8) },
-    /* 6 rock         */ { RGB(22,22,16), RGB(18,18,14), RGB(15,15,12), RGB(12,12,10) },
-    /* 7 snow         */ { RGB(31,62,30), RGB(28,55,28), RGB(24,48,24), RGB(20,40,20) },
-};
-
-static inline int height_band(int h)
-{
-    if (h <  40) return 0;
-    if (h <  55) return 1;
-    if (h <  65) return 2;
-    if (h <  90) return 3;
-    if (h < 120) return 4;
-    if (h < 150) return 5;
-    if (h < 195) return 6;
-    return 7;
-}
-
-static inline int dist_band(float z)
-{
-    if (z < 12.0f) return 0;
-    if (z < 28.0f) return 1;
-    if (z < 55.0f) return 2;
-    return 3;
-}
-
-// Sky gradient — warmer palette (dawn / haze) so it contrasts against
-// terrain instead of matching the water and distant mountains. Top is a
-// bruise-purple; the horizon washes toward a pale peach.
-static uint16_t sky_color(int y, int horizon)
-{
-    if (horizon <= 0) return RGB(4, 4, 6);
-    float t = (float)y / (float)horizon;
-    if (t < 0) t = 0;
-    if (t > 1) t = 1;
-    int r = (int)( 6 + 24 * t);   // purple-red -> peach
-    int g = (int)( 8 + 30 * t);   // dark -> light
-    int b = (int)(12 + 10 * t);   // stays modest so it doesn't read as water
-    if (r > 31) r = 31;
-    if (g > 63) g = 63;
-    if (b > 31) b = 31;
-    return RGB(r, g, b);
-}
-
-// --- Heightmap generation ---
-static void gen_heightmap(void)
-{
-    for (int z = 0; z < HM_SIZE; z++) {
-        for (int x = 0; x < HM_SIZE; x++) {
-            float fx = x, fz = z;
-            float h = 92.0f;
-            h += 60.0f * sinf(fx * 0.09f) * cosf(fz * 0.11f);
-            h += 32.0f * sinf((fx + fz) * 0.17f);
-            h += 16.0f * sinf(fx * 0.35f + fz * 0.29f);
-            h +=  8.0f * cosf(fx * 0.7f);
-            if (h < 0)   h = 0;
-            if (h > 255) h = 255;
-            s_hm[z * HM_SIZE + x] = (uint8_t)h;
-        }
-    }
-}
-
-// --- Framebuffer helpers ---
-
+// -----------------------------------------------------------------------
+// Framebuffer helpers (same as before -- these are the badge API, not
+// Terry's code).
+// -----------------------------------------------------------------------
 static inline void fb_pixel(int x, int y, uint16_t c)
 {
     if ((unsigned)x < SCREEN_W && (unsigned)y < SCREEN_H)
         s_fb[y * SCREEN_W + x] = c;
 }
-
-static inline void fb_vline(int x, int y, int h, uint16_t c)
-{
-    if ((unsigned)x >= SCREEN_W) return;
-    if (y < 0) { h += y; y = 0; }
-    if (y + h > SCREEN_H) h = SCREEN_H - y;
-    uint16_t *p = &s_fb[y * SCREEN_W + x];
-    for (int i = 0; i < h; i++) { *p = c; p += SCREEN_W; }
-}
-
 static inline void fb_hline(int x, int y, int w, uint16_t c)
 {
     if ((unsigned)y >= SCREEN_H) return;
     if (x < 0) { w += x; x = 0; }
     if (x + w > SCREEN_W) w = SCREEN_W - x;
+    if (w <= 0) return;
     uint16_t *p = &s_fb[y * SCREEN_W + x];
     for (int i = 0; i < w; i++) p[i] = c;
 }
-
+static void fb_line(int x0, int y0, int x1, int y1, uint16_t c)
+{
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int dy = -(y1 > y0 ? y1 - y0 : y0 - y1);
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (1) {
+        fb_pixel(x0, y0, c);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+static inline void fb_vline(int x, int y, int h, uint16_t c)
+{
+    if ((unsigned)x >= SCREEN_W) return;
+    if (y < 0) { h += y; y = 0; }
+    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    if (h <= 0) return;
+    uint16_t *p = &s_fb[y * SCREEN_W + x];
+    for (int i = 0; i < h; i++) { *p = c; p += SCREEN_W; }
+}
 static void fb_putc(int px, int py, char ch, uint16_t fg, uint16_t bg)
 {
     uint8_t c = (uint8_t)ch;
@@ -155,352 +223,632 @@ static void fb_putc(int px, int py, char ch, uint16_t fg, uint16_t bg)
         }
     }
 }
-
 static void fb_puts(int px, int py, const char *s, uint16_t fg, uint16_t bg)
 {
     while (*s) { fb_putc(px, py, *s++, fg, bg); px += 8; }
 }
 
-static void fb_line(int x0, int y0, int x1, int y1, uint16_t c)
-{
-    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-    while (1) {
-        fb_pixel(x0, y0, c);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
-    }
-}
+// -----------------------------------------------------------------------
+// Colors. Terry uses the 16-color CGA palette (BLUE, LTGREEN, GREEN,
+// LTGRAY, DKGRAY, WHITE) plus dithered pairs. We use the badge palette
+// (PAL_RGB565) so the on-screen result reads as Terry intended.
+// -----------------------------------------------------------------------
+#define C(idx)  PAL_RGB565[idx]
 
-// --- Fish sprites ---
-#define N_FISH  16
-#define FISH_Y  40.0f    // world y of water surface
-typedef struct { float x, z; bool caught; } fish_t;
-static fish_t s_fish[N_FISH];
-static int    s_caught;
-
-static void place_fish(void)
+// -----------------------------------------------------------------------
+// InitElevations -- LITERAL port of Terry's function.
+// See eagledive.cpp.z lines 308-337.
+//
+// He seeds MAP_WIDTH*MAP_HEIGHT/128 random square-bump generators;
+// each one picks a random location and a random power-of-two half-width j
+// (1..32), then makes j "layers", each layer adding MAP_SCALE/2 to
+// every cell in a shrinking square. The "if (!l && RandU16<MAX_U16/4)"
+// gates whether a run of solid layers starts. Result: hilly terrain with
+// mountain-like stacks. Finally clamps everything to at least water level.
+// -----------------------------------------------------------------------
+static void InitElevations(void)
 {
-    int placed = 0;
-    for (int attempt = 0; placed < N_FISH && attempt < 400; attempt++) {
-        int wx = (int)shrine_god(HM_SIZE);
-        int wz = (int)shrine_god(HM_SIZE);
-        if (s_hm[wz * HM_SIZE + wx] < 40) {
-            s_fish[placed].x = (float)wx + 0.5f;
-            s_fish[placed].z = (float)wz + 0.5f;
-            s_fish[placed].caught = false;
-            placed++;
+    memset(elevations, 0, sizeof(elevations));
+
+    for (int i = 0; i < MAP_WIDTH * MAP_HEIGHT / 128; i++) {
+        int x = (int)(RandU32() % MAP_WIDTH);
+        int y = (int)(RandU32() % MAP_HEIGHT);
+        int j = 1 << (RandU32() % 6);  // Terry: 1<<(RandU32%6)  => 1..32
+        int l = 0;
+        while (j--) {
+            if (!l && RandU16() < 0xffff / 4)      // Terry: MAX_U16/4
+                l = RandU16() % (j + 1);
+            if (l) {
+                int x1 = ClampI(x - j, 0, MAP_WIDTH  - 1);
+                int x2 = ClampI(x + j, 0, MAP_WIDTH  - 1);
+                int y1 = ClampI(y - j, 0, MAP_HEIGHT - 1);
+                int y2 = ClampI(y + j, 0, MAP_HEIGHT - 1);
+                for (int yy = y1; yy < y2; yy++)
+                    for (int xx = x1; xx < x2; xx++)
+                        elevations[yy][xx] += MAP_SCALE / 2;
+                l--;
+            }
         }
     }
-    while (placed < N_FISH) {
-        s_fish[placed].x = HM_SIZE / 2 + (float)((int)shrine_god(20) - 10);
-        s_fish[placed].z = HM_SIZE / 2 + (float)((int)shrine_god(20) - 10);
-        s_fish[placed].caught = false;
-        placed++;
+
+    // Terry: clamp to water level
+    for (int j = 0; j < MAP_HEIGHT; j++)
+        for (int i = 0; i < MAP_WIDTH; i++)
+            if (elevations[j][i] < WATER_ELEVATION * MAP_SCALE)
+                elevations[j][i] = WATER_ELEVATION * MAP_SCALE;
+}
+
+// -----------------------------------------------------------------------
+// SpawnFish -- Terry's fish spawning happens inline in MPDoPanels (see
+// eagledive.cpp.z lines 224-238): while walking each grid quad, if all
+// four corners are at or below WATER_ELEVATION*MAP_SCALE (i.e. this quad
+// is water), roll Rand<0.05, and if so drop a fish at the quad center.
+// We reproduce that scan literally, minus the Panel-merging (which we
+// don't do -- see concession header).
+// -----------------------------------------------------------------------
+static void SpawnFish(void)
+{
+    fish_count = 0;
+    for (int j = 0; j < MAP_HEIGHT - 1 && fish_count < MAX_FISH; j++) {
+        for (int i = 0; i < MAP_WIDTH - 1 && fish_count < MAX_FISH; i++) {
+            int l = elevations[j][i];
+            if (l <= WATER_ELEVATION * MAP_SCALE &&
+                elevations[j][i+1] <= WATER_ELEVATION * MAP_SCALE &&
+                elevations[j+1][i]   <= WATER_ELEVATION * MAP_SCALE &&
+                elevations[j+1][i+1] <= WATER_ELEVATION * MAP_SCALE)
+            {
+                if (RandF() < 0.05f) {                       // Terry: Rand<0.05
+                    fish[fish_count].x = (int64_t)i * MAP_SCALE;   // Terry: (i+w/2)*MAP_SCALE, w=1
+                    fish[fish_count].y = (int64_t)j * MAP_SCALE;
+                    fish[fish_count].z = l;
+                    fish[fish_count].alive = true;
+                    fish_count++;
+                }
+            }
+        }
     }
 }
 
-// --- Camera / flight ---
-static float s_cx, s_cy, s_cz;
-static float s_yaw, s_pitch;
-static float s_speed;
-static float s_yaw_rate, s_pitch_rate;
-
-#define FLY_SPEED     22.0f
-#define BOOST_SPEED   38.0f
-#define TURN_RATE     1.2f
-#define PITCH_RATE    0.8f
-#define GROUND_MARGIN 14.0f
-
-static void reset_camera(void)
+// -----------------------------------------------------------------------
+// PanelColorAt -- LITERAL port of Terry's color-selection code from
+// MPDoPanels lines 224-268 (the non-water branches). The pattern:
+//   RandI16 & 1 chooses between "solid" and "dithered" variant;
+//   elevation vs ROCK_/SNOW_ELEVATION picks the color family;
+//   RandU16 & 3 picks the rare-highlight (LTGRAY / WHITE spots).
+//
+// Terry uses this to give each merged Panel a stable color at map-gen
+// time. We call it per-terrain-sample; result is a noisier but visually
+// equivalent field of the same colors in the same proportions.
+// -----------------------------------------------------------------------
+static uint16_t PanelColorAt(int l, uint16_t rn)
 {
-    s_cx = HM_SIZE / 2;
-    s_cz = HM_SIZE / 2;
-    s_cy = 190.0f;
-    s_yaw = 0.0f;
-    s_pitch = 0.0f;
-    s_speed = FLY_SPEED;
-    s_yaw_rate = s_pitch_rate = 0;
-    s_caught = 0;
-    for (int i = 0; i < N_FISH; i++) s_fish[i].caught = false;
+    // Terry's monitor rendered the terrain as a ridiculous combination
+    // of two green tones (his palette's GREEN + LTGREEN, plus BLUE for
+    // water) with barely-there hill contrast. On badge that read as a
+    // flat green wash. Push the four bands further apart on the same
+    // green axis so hills actually pop:
+    //   water     BLUE
+    //   grass     LTGREEN (bright, saturated)
+    //   foothills GREEN   (darker, more muted)
+    //   peaks     LTCYAN  (near-white highlight — his snow band)
+    // Per-cell hash (rn) is ignored — variation was making adjacent
+    // cells checkerboard.
+    (void)rn;
+    if (l <= WATER_ELEVATION * MAP_SCALE)   return C(C_BLUE);
+    if (l <  ROCK_ELEVATION  * MAP_SCALE)   return C(C_LTGREEN);
+    if (l <  SNOW_ELEVATION  * MAP_SCALE)   return C(C_GREEN);
+    return C(C_LTCYAN);
 }
 
-// --- Voxel renderer ---
-#define FOV_HALF   0.523f
-#define NEAR_Z     1.0f
-#define FAR_Z      140.0f          // further horizon — grow step keeps cost flat
-#define BASE_HORIZON  120
-
-static float s_col_tan[SCREEN_W];
-static void build_col_tan(void)
+// A small deterministic hash used in place of Terry's per-Panel Rand
+// calls, so the color for a given cell doesn't shimmer each frame.
+static inline uint16_t cell_hash(int i, int j)
 {
+    uint32_t h = (uint32_t)(i * 73856093u ^ j * 19349663u);
+    h ^= h >> 13;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15;
+    return (uint16_t)h;
+}
+
+// -----------------------------------------------------------------------
+// Raycast terrain renderer -- our concession to Terry's Panel-poly
+// renderer. See top-of-file for justification. This preserves all of
+// his coloring, elevation bands, sky/water rules; it just samples the
+// grid per screen column instead of drawing merged quads.
+// -----------------------------------------------------------------------
+
+// Camera helper: convert Terry's stored world-coords to grid indices.
+static inline void cam_grid(int *gx, int *gy, int *height_out)
+{
+    int xx = (int)((cam_x / COORDINATE_SCALE) / MAP_SCALE);
+    int yy = (int)((cam_y / COORDINATE_SCALE) / MAP_SCALE);
+    xx &= MAP_MASK; yy &= MAP_MASK;
+    int z_world = (int)(cam_z / COORDINATE_SCALE);
+    *gx = xx; *gy = yy;
+    *height_out = z_world - elevations[yy][xx];             // Terry: height=z/COORDINATE_SCALE-elevations[yy][xx]
+}
+
+static void DrawHorizon(uint16_t sky, uint16_t haze, int horizon)
+{
+    // Terry's DrawHorizon rotates a horizon line via the camera matrix
+    // and splits the screen into sky/ground. We do the same as a
+    // simple two-band fill governed by pitch; roll (theta1) tilts the
+    // dividing line.
+    float s = sinf(theta1);
+    float c = cosf(theta1);
+    for (int y = 0; y < SCREEN_H; y++) {
+        for (int x = 0; x < SCREEN_W; x++) {
+            // signed distance from tilted horizon line through (cx, horizon)
+            float dx = x - SCREEN_W * 0.5f;
+            float dy = y - horizon;
+            float t  = dy * c - dx * s;
+            s_fb[y * SCREEN_W + x] = (t < 0) ? sky : haze;
+        }
+    }
+}
+
+// Per-column top-of-terrain, used for fish sprite occlusion.
+static int col_top[SCREEN_W];
+
+static void RenderTerrain(int horizon)
+{
+    // Camera axes for the standard flight-sim convention:
+    // yaw (theta1) rotates about +z, forward = (sin(t1), cos(t1)) on
+    // the ground plane. Pitch tilts the horizon (already baked in by
+    // caller via `horizon`). Note: pitch_off variable retained for
+    // clarity; it's not applied here (horizon carries pitch already).
+    float cy_ = cosf(theta1), sy_ = sinf(theta1);
+    float pitch_off = 0.0f;
+
+    // Camera height in Terry's world units (matches height calc above)
+    int cx_g, cy_g, h_over_gnd;
+    cam_grid(&cx_g, &cy_g, &h_over_gnd);
+    float cam_h = (float)(cam_z / COORDINATE_SCALE);
+
+    // View plane basics. FOV ~60deg horizontal.
+    const float FOV_HALF = 0.523f;
+    const float half_tan = 0.577f;
+
+    // Camera world position (grid units, float)
+    float cwx = (float)(cam_x / COORDINATE_SCALE) / (float)MAP_SCALE;
+    float cwy = (float)(cam_y / COORDINATE_SCALE) / (float)MAP_SCALE;
+
     for (int x = 0; x < SCREEN_W; x++) {
         float u = ((float)x / (SCREEN_W - 1)) * 2.0f - 1.0f;
-        s_col_tan[x] = u * tanf(FOV_HALF);
-    }
-}
-
-// Per-column topmost drawn terrain y (for coarse sprite occlusion).
-static int s_col_top[SCREEN_W];
-static int s_caught;
-
-// Render fish as scaled billboards after terrain, before HUD.
-static void render_fish(int horizon)
-{
-    float cy_ = cosf(s_yaw), sy_ = sinf(s_yaw);
-    float half_tan = tanf(FOV_HALF);
-    for (int i = 0; i < N_FISH; i++) {
-        if (s_fish[i].caught) continue;
-        float dx = s_fish[i].x - s_cx;
-        float dz = s_fish[i].z - s_cz;
-        float cam_x =  dx * cy_ + dz * sy_;
-        float cam_z = -dx * sy_ + dz * cy_;
-        if (cam_z < 1.0f) continue;
-        float tan_u = cam_x / cam_z;
-        if (tan_u < -half_tan * 1.2f || tan_u > half_tan * 1.2f) continue;
-        int sx = (int)((tan_u / half_tan + 1.0f) * (SCREEN_W - 1) / 2);
-        float dy = FISH_Y - s_cy;
-        int sy = horizon - (int)(dy / cam_z * 100.0f);
-        int size = (int)(70.0f / cam_z);
-        if (size < 2)  size = 2;
-        if (size > 12) size = 12;
-        // Coarse occlusion — if the whole sprite is above the terrain
-        // silhouette at that column, don't draw.
-        if (sx >= 0 && sx < SCREEN_W && sy + size < s_col_top[sx]) continue;
-
-        // Fish body — ellipse; tail slightly darker; eye a bright dot.
-        uint16_t body = RGB(30, 44, 6);
-        uint16_t tail = RGB(24, 28, 4);
-        uint16_t eye  = RGB(31, 62, 31);
-        for (int py = -size / 2; py <= size / 2; py++) {
-            for (int px = -size; px <= size; px++) {
-                if (px * px * 4 + py * py * 16 > size * size * 4) continue;
-                uint16_t c = (px < -size / 2) ? tail : body;
-                fb_pixel(sx + px, sy + py, c);
-            }
-        }
-        fb_pixel(sx + size / 2, sy - 1, eye);
-
-        // "Catch" test — talons are almost fully extended (cam_z very
-        // small) and we're pointed at the water. Terry's version deploys
-        // automatically at close range; we do the same.
-        if (cam_z < 3.5f) {
-            s_fish[i].caught = true;
-            s_caught++;
-            shrine_beep(1800, 60);
-            shrine_beep(2400, 80);
-        }
-    }
-}
-
-static void render_frame(void)
-{
-    int horizon = BASE_HORIZON + (int)(s_pitch * 240.0f);
-    if (horizon < 0)   horizon = 0;
-    if (horizon > SCREEN_H) horizon = SCREEN_H;
-
-    // Sky gradient — one hline per row is fast in memory.
-    for (int y = 0; y < horizon; y++)
-        fb_hline(0, y, SCREEN_W, sky_color(y, horizon));
-
-    // Prepare the below-horizon region: fill with a haze color so gaps
-    // don't show through as garbage from the previous frame.
-    uint16_t haze = TERRAIN[3][3];
-    for (int y = horizon; y < SCREEN_H; y++)
-        fb_hline(0, y, SCREEN_W, haze);
-
-    float cos_y = cosf(s_yaw), sin_y = sinf(s_yaw);
-    for (int x = 0; x < SCREEN_W; x++) {
-        float ct = s_col_tan[x];
-        float rx = ct * cos_y + sin_y;
-        float rz = -ct * sin_y + cos_y;
-        float rlen = sqrtf(rx * rx + rz * rz);
-        rx /= rlen; rz /= rlen;
+        float ct = u * half_tan;
+        // Camera-space ray -> world-space ray via yaw
+        float rx = ct * cy_ + sy_;
+        float ry = -ct * sy_ + cy_;
+        float rlen = sqrtf(rx * rx + ry * ry);
+        rx /= rlen; ry /= rlen;
 
         int ymax = SCREEN_H;
-        float z = NEAR_Z;
+        float z = 1.0f;
         float dz = 0.4f;
+        const float FAR_Z = 260.0f;   // bumped from 160 for better draw distance
         while (z < FAR_Z && ymax > horizon) {
-            float wx = s_cx + rx * z;
-            float wz = s_cz + rz * z;
-            int h = hm_get((int)wx, (int)wz);
-            float dy = (float)h - s_cy;
-            int screen_y = horizon - (int)(dy / z * 100.0f);
+            float wx = cwx + rx * z;
+            float wy = cwy + ry * z;
+            int gi = ((int)wx) & MAP_MASK;
+            int gj = ((int)wy) & MAP_MASK;
+            int elev = elevations[gj][gi];             // world elevation
+            float dy_w = (float)elev - cam_h;
+            int screen_y = horizon - (int)(dy_w / z * (DISPLAY_SCALE * 0.014f)
+                                           + pitch_off * 0);
+            // (DISPLAY_SCALE * 0.014f ~= 1.4 -- projects Terry's world
+            //  elevation units to fb pixels at unit distance. Empirical
+            //  scale chosen so a WATER_ELEVATION*MAP_SCALE=2250 world
+            //  elevation, viewed from cam_h ~4000 at z=20, projects to
+            //  a sensible pixel offset. Not a Terry constant.)
             if (screen_y < ymax) {
                 if (screen_y < horizon) screen_y = horizon;
-                uint16_t c = TERRAIN[height_band(h)][dist_band(z)];
-                fb_vline(x, screen_y, ymax - screen_y, c);
+                uint16_t col = PanelColorAt(elev, cell_hash(gi, gj));
+                fb_vline(x, screen_y, ymax - screen_y, col);
                 ymax = screen_y;
             }
-            // Aggressive step growth — near sampling stays dense so nearby
-            // features look sharp; far sampling coarsens so total iteration
-            // count stays bounded (~90 per column) even at FAR_Z=140.
-            z  += dz;
+            z += dz;
             dz += 0.045f;
         }
-        s_col_top[x] = ymax;   // record for sprite occlusion
+        col_top[x] = ymax;
     }
 }
 
-// --- HUD ---
-static const uint16_t HUD_BG = RGB(2, 4, 6);   // near-black
-static const uint16_t HUD_FG = RGB(31, 60, 8); // amber-yellow
-static const uint16_t HUD_ACC = RGB(28, 40, 30);
-static const uint16_t HUD_HIGHLIGHT = RGB(31, 40, 31);
-
-static void render_hud(uint32_t t_ms)
+// -----------------------------------------------------------------------
+// Fish sprite. Terry's original is `Sprite3(dc,tempf->p.x,...,BI=1)` — a
+// 144-byte vector command stream (SPT_COLOR MAGENTA, SPT_THICK 2, then
+// 8 SPT_LINE segments forming his signature ~50x75 fish outline).
+// We render it through templeshim's Sprite3S, which walks the same
+// opcode stream Terry's Sprite3() walks. See sprite_eagledive.h BI=1.
+//
+// gr_dc is pointed at s_fb by Init_EagleDive() with scale=1 (fb is
+// already 320x240 native; no Terry-space halving). The `col` argument
+// is ignored — the sprite has its own SPT_COLOR baked in.
+// -----------------------------------------------------------------------
+static void draw_fish_sprite(int sx, int sy, int scale, uint16_t col)
 {
-    // Top strip
-    for (int y = 0; y < 16; y++) fb_hline(0, y, SCREEN_W, HUD_BG);
-    // Bottom strip
-    for (int y = SCREEN_H - 10; y < SCREEN_H; y++) fb_hline(0, y, SCREEN_W, HUD_BG);
+    (void)col;  // Terry's sprite carries its own SPT_COLOR opcode.
+    // (sx, sy) in the caller is the top-left of the old 8x8 glyph; the
+    // vector sprite anchors at its own origin, so add 4*scale to land the
+    // fish body center where the caller expects the glyph center.
+    int cx = sx + 4 * scale;
+    int cy = sy + 4 * scale;
+    // Terry's fish extends roughly -32..+43 Terry-px, so at scale=1 it
+    // fills ~50x75 fb pixels. The caller's `scale` (1..4) is a
+    // depth-based zoom that we forward straight through.
+    Sprite3S(&gr_dc, cx, cy, 0, (float)scale,
+             SPRITE_EAGLEDIVE_BI_1, SPRITE_EAGLEDIVE_BI_1_SIZE);
+}
 
-    char buf[24];
-    int heading = ((int)(s_yaw * 180.0f / 3.14159f) % 360 + 360) % 360;
-    int pitch_deg = (int)(s_pitch * 180.0f / 3.14159f);
+static void RenderFish(int horizon)
+{
+    // Terry: Sprite3(dc,tempf->p.x,tempf->p.y,tempf->p.z,fish_glyph)
+    // We do our own camera-space projection with the same yaw the ray
+    // caster uses.
+    float cy_ = cosf(theta1), sy_ = sinf(theta1);
+    float cwx = (float)(cam_x / COORDINATE_SCALE) / (float)MAP_SCALE;
+    float cwy = (float)(cam_y / COORDINATE_SCALE) / (float)MAP_SCALE;
+    float cam_h = (float)(cam_z / COORDINATE_SCALE);
 
-    snprintf(buf, sizeof(buf), "HDG %03d", heading);
-    fb_puts(2, 0, buf, HUD_FG, HUD_BG);
-    snprintf(buf, sizeof(buf), "ALT %03d", (int)s_cy);
-    fb_puts(2, 8, buf, HUD_FG, HUD_BG);
-    snprintf(buf, sizeof(buf), "PIT %+03d", pitch_deg);
-    fb_puts(SCREEN_W - 8 * 8, 0, buf, HUD_FG, HUD_BG);
-    snprintf(buf, sizeof(buf), "FSH %02d/%02d", s_caught, N_FISH);
-    fb_puts(SCREEN_W - 9 * 8, 8, buf, HUD_HIGHLIGHT, HUD_BG);
+    // Terry's proximity filter: only draw fish within 20 * MAP_SCALE.
+    for (int i = 0; i < fish_count; i++) {
+        if (!fish[i].alive) continue;
+        int64_t fx = fish[i].x;
+        int64_t fy = fish[i].y;
+        int64_t fz = fish[i].z;
 
-    // Blinking title in the middle-top.
-    const char *title = "* TALONS *";
-    int title_w = 10 * 8;
-    uint16_t tcol = ((t_ms / 500) & 1) ? HUD_HIGHLIGHT : HUD_ACC;
-    fb_puts((SCREEN_W - title_w) / 2, 0, title, tcol, HUD_BG);
+        // Terry: SqrI64(fx-xx)+SqrI64(fy-yy) < MAP_SCALE*MAP_SCALE*20*20
+        int64_t px_diff = fx - (cam_x / COORDINATE_SCALE);
+        int64_t py_diff = fy - (cam_y / COORDINATE_SCALE);
+        if (SqrI64(px_diff) + SqrI64(py_diff)
+            >= (int64_t)MAP_SCALE * MAP_SCALE * 20 * 20)
+            continue;
 
-    // Crosshair.
+        // Project into camera space
+        float dx = (float)fx / (float)MAP_SCALE - cwx;
+        float dy = (float)fy / (float)MAP_SCALE - cwy;
+        float cam_xp =  dx * cy_ + dy * sy_;
+        float cam_zp = -dx * sy_ + dy * cy_;
+        if (cam_zp < 1.0f) continue;
+        float tan_u = cam_xp / cam_zp;
+        if (tan_u < -0.7f || tan_u > 0.7f) continue;
+        int sx = (int)((tan_u / 0.577f + 1.0f) * (SCREEN_W - 1) * 0.5f);
+        float dz_w = (float)fz - cam_h;
+        int sy_pix = horizon - (int)(dz_w / cam_zp * 1.4f);
+        int scale  = (int)(6.0f / cam_zp);
+        if (scale < 1) scale = 1;
+        if (scale > 4) scale = 4;
+        if (sx >= 0 && sx < SCREEN_W && sy_pix + 8 * scale < col_top[sx])
+            continue;
+        draw_fish_sprite(sx - 4 * scale, sy_pix - 4 * scale, scale, C(C_LTBLUE));
+    }
+}
+
+// -----------------------------------------------------------------------
+// HUD -- Terry's GrPrint calls at the top of BSPEagleDive:
+//   "�1:%5.1f �:%5.1f �2:%5.1f Strip:%5d"
+//   "x:%5.1f y:%5.1f z:%5.1f height:%3d score:%d high:%d"
+// We reproduce those verbatim (renaming �1/�/�2 to T1/T/T2 for ASCII).
+// -----------------------------------------------------------------------
+static void RenderHUD(void)
+{
+    char buf[64];
+    const float RAD2DEG = 57.2957795f;
+
+    snprintf(buf, sizeof(buf), "T1:%5.1f T:%5.1f T2:%5.1f",
+             theta1 * RAD2DEG, theta * RAD2DEG, theta2 * RAD2DEG);
+    fb_puts(0, 0, buf, C(C_YELLOW), C(C_BLACK));
+
+    int cx_g, cy_g, h_over;
+    cam_grid(&cx_g, &cy_g, &h_over);
+    snprintf(buf, sizeof(buf), "x:%d y:%d z:%d h:%d",
+             cx_g, cy_g, (int)(cam_z / COORDINATE_SCALE / MAP_SCALE), h_over);
+    fb_puts(0, 8, buf, C(C_LTGREEN), C(C_BLACK));
+
+    snprintf(buf, sizeof(buf), "score:%d  best:%d", game_score, best_score);
+    fb_puts(0, SCREEN_H - 16, buf, C(C_WHITE), C(C_BLACK));
+    fb_puts(0, SCREEN_H - 8,
+            "ARROWS FLY  A RESTART  BOOT EXIT",
+            C(C_LTGRAY), C(C_BLACK));
+
+    // Crosshair -- Terry: GrLine3(cx+/-5, cy, ...)
     int cx = SCREEN_W / 2, cy = SCREEN_H / 2;
-    fb_hline(cx - 6, cy, 4, HUD_FG);
-    fb_hline(cx + 3, cy, 4, HUD_FG);
-    fb_vline(cx, cy - 4, 3, HUD_FG);
-    fb_vline(cx, cy + 2, 3, HUD_FG);
+    uint16_t xh = C(C_WHITE);
+    fb_hline(cx - 5, cy, 4, xh);
+    fb_hline(cx + 2, cy, 4, xh);
+    fb_vline(cx, cy - 5, 4, xh);
+    fb_vline(cx, cy + 2, 4, xh);
 
-    // Control hint.
-    fb_puts(2, SCREEN_H - 8, "ARROWS FLY  A DIVE  BOOT EXIT",
-            HUD_ACC, HUD_BG);
+    // Eagle talons overlay — homage (not from Terry's eagledive.cpp.z).
+    // The user recalls Terry's on-monitor rendering had prominent talons
+    // strobing at the top of the view, giving the eagle's POV; his
+    // source doesn't actually draw them, but the visual is iconic to
+    // the game. Composed here as brown legs + yellow claws framing the
+    // top corners, flashed intermittently (~500 ms every ~2.5 s) so the
+    // clean flight view stays readable.
+    uint32_t now_talons = shrine_ms();
+    uint32_t cycle = now_talons % 2500;
+    if (cycle < 500) {
+        // Alpha-ish emphasis: outline pass (BLACK) + fill pass (BROWN),
+        // then LTYELLOW claw tips.
+        uint16_t brown  = C(C_BROWN);
+        uint16_t claw   = C(C_YELLOW);
+        uint16_t outline= C(C_BLACK);
+
+        // Left talon leg — a fat brown wedge from the top-left corner
+        // sweeping down/right, ending in three claws pointing inward.
+        for (int r = 0; r < 40; r++) {
+            int w = 34 - r * 3 / 4;
+            if (w < 8) w = 8;
+            fb_hline(0, r, w, brown);
+            fb_pixel(w, r, outline);
+        }
+        // Left claws: 3 tapered wedges at (5,40)..(30,55)
+        int lcx[3] = { 8, 18, 28 };
+        for (int i = 0; i < 3; i++) {
+            int base_x = lcx[i];
+            for (int r = 0; r < 14; r++) {
+                int half = 5 - r / 3;
+                if (half < 1) half = 1;
+                fb_hline(base_x - half, 40 + r, half * 2, brown);
+            }
+            // Tip claw (bright yellow) + black outline underneath.
+            fb_hline(base_x - 1, 53, 3, claw);
+            fb_pixel(base_x - 2, 52, outline);
+            fb_pixel(base_x + 2, 52, outline);
+            fb_pixel(base_x, 55, outline);
+        }
+        // Right talon leg — mirrored.
+        for (int r = 0; r < 40; r++) {
+            int w = 34 - r * 3 / 4;
+            if (w < 8) w = 8;
+            fb_hline(SCREEN_W - w, r, w, brown);
+            fb_pixel(SCREEN_W - w - 1, r, outline);
+        }
+        int rcx[3] = { SCREEN_W - 9, SCREEN_W - 19, SCREEN_W - 29 };
+        for (int i = 0; i < 3; i++) {
+            int base_x = rcx[i];
+            for (int r = 0; r < 14; r++) {
+                int half = 5 - r / 3;
+                if (half < 1) half = 1;
+                fb_hline(base_x - half, 40 + r, half * 2, brown);
+            }
+            fb_hline(base_x - 1, 53, 3, claw);
+            fb_pixel(base_x - 2, 52, outline);
+            fb_pixel(base_x + 2, 52, outline);
+            fb_pixel(base_x, 55, outline);
+        }
+    }
+
+    // Terry's "Catch Fish" flashes for the first 5 seconds
+    uint32_t now = shrine_ms();
+    if (!game_over && (now - game_t0_ms) < 5000 && ((now / 400) & 1)) {
+        fb_puts((SCREEN_W - 10 * 8) / 2, SCREEN_H / 2 - 20,
+                "Catch Fish", C(C_WHITE), C(C_BLACK));
+    }
+    if (game_over && ((now / 400) & 1)) {
+        fb_puts((SCREEN_W - 9 * 8) / 2, SCREEN_H / 2 - 20,
+                "Game Over", C(C_LTRED), C(C_BLACK));
+    }
 }
 
-// Draw the mechanical grabbing talons — two arms extending down from the
-// bottom center of the screen, reaching further and pinching in when
-// fish are close.
-static void render_talons(void)
+// -----------------------------------------------------------------------
+// AnimateTask -- LITERAL port of Terry's AnimateTask (lines 755-806).
+// This is the plane-forward integrator. Terry:
+//   * build screen->world rotation from theta1, theta, theta2
+//   * transform (0, 0, -speed*mS*COORDINATE_SCALE) into world-space
+//   * add to x, y, z
+//   * grid indices xx,yy = x/COORDINATE_SCALE, y/COORDINATE_SCALE
+//   * if z1 < WATER_ELEVATION*MAP_SCALE:
+//        speed = 0.5
+//        for each fish within 5*MAP_SCALE: score++, free fish, Snd(1000)
+//   * else adjust speed by pitch
+// -----------------------------------------------------------------------
+static void AnimateStep(float mS)
 {
-    float cy_ = cosf(s_yaw), sy_ = sinf(s_yaw);
-    float min_z = 1e9f;
-    int   near_i = -1;
-    for (int i = 0; i < N_FISH; i++) {
-        if (s_fish[i].caught) continue;
-        float dx = s_fish[i].x - s_cx;
-        float dz = s_fish[i].z - s_cz;
-        float cam_z = -dx * sy_ + dz * cy_;
-        float cam_x =  dx * cy_ + dz * sy_;
-        if (cam_z < 1.0f || cam_z > 12.0f) continue;
-        if (cam_x * cam_x > cam_z * cam_z) continue;
-        if (cam_z < min_z) { min_z = cam_z; near_i = i; }
+    if (game_over) return;
+
+    // Standard flight-sim movement (revised from Terry's derivation).
+    // Speed direction:
+    //   dx = Z * cos(theta) * sin(theta1)   (east component)
+    //   dy = Z * cos(theta) * cos(theta1)   (north component)
+    //   dz = Z * sin(theta)                 (up component)
+    // At theta=0 (level) with theta1=0: (0, Z, 0) — moves +y.
+    // With theta1=pi/2 (turned east): (Z, 0, 0) — moves +x.
+    // So yaw actually rotates movement now, and pitch tilts up/down.
+    float Z = speed * mS * COORDINATE_SCALE;
+    float sT = sinf(theta),  cT = cosf(theta);
+    float s1 = sinf(theta1), c1 = cosf(theta1);
+    int64_t dx = (int64_t)( Z * cT * s1 );
+    int64_t dy = (int64_t)( Z * cT * c1 );
+    int64_t dz = (int64_t)( Z * sT );
+    cam_x += dx;
+    cam_y += dy;
+    cam_z += dz;
+
+    // Terry: x1 = x/COORDINATE_SCALE, y1 = y/COORDINATE_SCALE, z1 = z/COORDINATE_SCALE
+    int64_t x1 = cam_x / COORDINATE_SCALE;
+    int64_t y1 = cam_y / COORDINATE_SCALE;
+    int64_t z1 = cam_z / COORDINATE_SCALE;
+
+    if (z1 < WATER_ELEVATION * MAP_SCALE) {
+        // Terry: speed = 0.5;  (splashdown into water)
+        speed = 0.5f;
+        // Terry: for each fish, if within 5*MAP_SCALE in x/y, catch it.
+        for (int i = 0; i < fish_count; i++) {
+            if (!fish[i].alive) continue;
+            if (SqrI64(fish[i].x - x1) + SqrI64(fish[i].y - y1)
+                < (int64_t)MAP_SCALE * MAP_SCALE * 5 * 5)
+            {
+                game_score++;
+                if (game_score > best_score) best_score = game_score;
+                fish[i].alive = false;
+                shrine_beep(1000, 60);          // Terry: Snd(1000); Sleep(200); Snd(0);
+            }
+        }
+    } else {
+        // Terry's pitch-vs-speed rules (verbatim thresholds):
+        //   if -pi/4 <= theta <= pi/4  : speed += 0.0005
+        //   else if -3pi/4 <= theta <= 3pi/4 : speed += 0.0001
+        //   else                       : speed -= 0.0001
+        //   speed = Clamp(speed + (0.0005 - 0.0002*Abs(theta)/(pi/4)), 0.1, 5.0)
+        const float PI = 3.14159265f;
+        if (theta >= -PI/4    && theta <=    PI/4) speed += 0.0005f;
+        else if (theta >= -3*PI/4 && theta <=  3*PI/4) speed += 0.0001f;
+        else                                       speed -= 0.0001f;
+        speed = ClampF(speed + (0.0005f - 0.0002f * Abs_f(theta) / (PI/4.0f)),
+                       0.1f, 5.0f);
     }
+}
 
-    int base_cx = SCREEN_W / 2;
-    int base_y  = SCREEN_H - 10;
-
-    // Always show a resting hook shape so the player sees the tool. Extend
-    // it further and pinch closed when a fish is in range.
-    float extend_t = 0.25f;         // resting: short talons visible
-    int   pinch    = 14;
-    if (near_i >= 0) {
-        float t = 1.0f - (min_z / 12.0f);
-        if (t < 0) t = 0;
-        extend_t = 0.25f + 0.75f * t;
-        pinch    = 14 - (int)(t * 10);
-    }
-    int extend_px = (int)(70.0f * extend_t);
-
-    for (int side = -1; side <= 1; side += 2) {
-        int base_x   = base_cx + side * 14;
-        int elbow_x  = base_cx + side * 20;
-        int elbow_y  = base_y - extend_px / 2;
-        int tip_x    = base_cx + side * pinch;
-        int tip_y    = base_y - extend_px;
-        fb_line(base_x - 1, base_y, elbow_x - 1, elbow_y, RGB(20, 22, 22));
-        fb_line(base_x,     base_y, elbow_x,     elbow_y, RGB(28, 28, 28));
-        fb_line(base_x + 1, base_y, elbow_x + 1, elbow_y, RGB(20, 22, 22));
-        fb_line(elbow_x - 1, elbow_y, tip_x - 1, tip_y, RGB(20, 22, 22));
-        fb_line(elbow_x,     elbow_y, tip_x,     tip_y, RGB(28, 28, 28));
-        fb_line(elbow_x + 1, elbow_y, tip_x + 1, tip_y, RGB(20, 22, 22));
-        for (int f = 0; f < 3; f++) {
-            int hx = tip_x + side * (f * 2);
-            fb_line(hx, tip_y, hx + side * 2, tip_y + 4, RGB(31, 40, 8));
+// -----------------------------------------------------------------------
+// Game-over check -- from BSPEagleDive top:
+//   height = z/COORDINATE_SCALE - elevations[yy][xx]
+//   if (height < 0)
+//     if (elevations[yy][xx] > WATER_ELEVATION*MAP_SCALE) game_over=TRUE
+//     else                                                bkcolor=BLUE
+// I.e. plane went below terrain: if the terrain there was land, die;
+// else you're just underwater (fine, that's how fish get caught).
+// -----------------------------------------------------------------------
+static void CheckGameOver(void)
+{
+    int gx, gy, h_over;
+    cam_grid(&gx, &gy, &h_over);
+    if (h_over < 0) {
+        if (elevations[gy][gx] > WATER_ELEVATION * MAP_SCALE) {
+            if (!game_over) {
+                game_over = true;
+                shrine_beep(200, 300);          // Terry: Beep
+            }
         }
     }
 }
 
-// --- Update ---
-static void update_camera(float dt, bool boost)
+// -----------------------------------------------------------------------
+// Init -- LITERAL port of Terry's Init() (lines 835-865).
+// -----------------------------------------------------------------------
+static void Init_EagleDive(void)
 {
-    s_yaw   += s_yaw_rate   * dt;
-    s_pitch += s_pitch_rate * dt;
-    s_yaw_rate   *= 0.90f;
-    s_pitch_rate *= 0.92f;
-    if (s_pitch >  0.7f) s_pitch =  0.7f;
-    if (s_pitch < -0.7f) s_pitch = -0.7f;
-    if (s_yaw >  6.2832f) s_yaw -= 6.2832f;
-    if (s_yaw < -6.2832f) s_yaw += 6.2832f;
+    const float PI = 3.14159265f;
+    // Point templeshim's gr_dc at our scene fb so Sprite3S (used by
+    // draw_fish_sprite for Terry's vector fish) has a target. scale=1
+    // because the rest of game_talons already renders in native fb
+    // coordinates (320x240), unlike After Egypt which uses Terry's
+    // 640x480 space with scale=2.
+    CDCInit(s_fb, SCREEN_W, SCREEN_H, 1);
+    game_over = false;
+    game_score = 0;
+    InitElevations();
+    SpawnFish();
 
-    float target = boost ? BOOST_SPEED : FLY_SPEED;
-    s_speed += (target - s_speed) * dt * 3.0f;
+    // Standard flight-sim convention (deviation from Terry's original):
+    // theta   = pitch, 0 = level, +pi/2 = straight up, -pi/2 = straight down.
+    // theta1  = yaw,   0 = north, positive = turn east/right.
+    // Terry's convention had theta=-pi/2 as "level" but cos(theta)=0 there
+    // makes yaw a no-op on movement (drift-doesn't-follow-heading bug).
+    // We rewrite the movement math and the terrain-render camera axes to
+    // match this convention so LEFT/RIGHT actually steer the plane.
+    theta  = 0.0f;                   // level
+    theta1 = 0.0f;                   // facing +y (north)
+    theta2 = 0.0f;
+    speed  = 2.5f;
 
-    s_cx += sinf(s_yaw) * cosf(s_pitch) * s_speed * dt;
-    s_cz += cosf(s_yaw) * cosf(s_pitch) * s_speed * dt;
-    s_cy -= sinf(s_pitch) * s_speed * dt;
+    // Terry: x=MAP_WIDTH>>1*COORDINATE_SCALE*MAP_SCALE  etc.
+    cam_x = (int64_t)(MAP_WIDTH  >> 1) * COORDINATE_SCALE * MAP_SCALE;
+    cam_y = (int64_t)(MAP_HEIGHT >> 1) * COORDINATE_SCALE * MAP_SCALE;
+    cam_z = (int64_t)64                * COORDINATE_SCALE * MAP_SCALE;
 
-    int h_below = hm_get((int)s_cx, (int)s_cz);
-    if (s_cy < (float)h_below + GROUND_MARGIN)
-        s_cy = (float)h_below + GROUND_MARGIN;
-    if (s_cy > 250.0f) s_cy = 250.0f;
+    game_t0_ms = shrine_ms();
 }
 
+// -----------------------------------------------------------------------
+// Main loop -- LITERAL port of the switch inside EagleDive() (lines
+// 890-964). Terry has ScanKey with CH_ vs SC_ splits; we just map
+// arrows to the exact same theta / theta1 / theta2 updates, and A to
+// restart (his '\n' branch).
+// -----------------------------------------------------------------------
 void game_talons_run(void)
 {
-    gen_heightmap();
-    build_col_tan();
-    place_fish();
-    reset_camera();
-
+    Init_EagleDive();
     uint32_t last = shrine_ms();
+
     while (1) {
         shrine_input_scan();
         if (shrine_should_quit()) return;
 
-        if (shrine_key_held(BTN_LEFT))  s_yaw_rate   -= TURN_RATE  * 0.20f;
-        if (shrine_key_held(BTN_RIGHT)) s_yaw_rate   += TURN_RATE  * 0.20f;
-        if (shrine_key_held(BTN_UP))    s_pitch_rate -= PITCH_RATE * 0.20f;
-        if (shrine_key_held(BTN_DOWN))  s_pitch_rate += PITCH_RATE * 0.20f;
-        bool boost = shrine_key_held(BTN_A);
+        // Controls — Terry's original mapping is inverted vs. what most
+        // players expect (his DOWN made theta more negative, and given
+        // the world convention that means climb, so his DOWN meant
+        // "pull back stick = climb", classic flight-sim style). On our
+        // d-pad users expect DOWN = dive. Swap the deltas so pressing
+        // DOWN pitches the nose down (theta more positive, dz negative)
+        // and UP pitches up.
+        //   RIGHT: theta1 += CTRLS_SCALE    (yaw right — Terry verbatim)
+        //   LEFT:  theta1 -= CTRLS_SCALE    (yaw left  — Terry verbatim)
+        // Standard flight-sim convention: DOWN = pitch nose down (dive
+        // = decrease theta), UP = pitch nose up (climb = increase
+        // theta). LEFT/RIGHT rotate the heading (theta1).
+        if (shrine_key_held(BTN_DOWN))  theta  -= CTRLS_SCALE;
+        if (shrine_key_held(BTN_UP))    theta  += CTRLS_SCALE;
+        if (shrine_key_held(BTN_RIGHT)) theta1 += CTRLS_SCALE;
+        if (shrine_key_held(BTN_LEFT))  theta1 -= CTRLS_SCALE;
+        // Clamp pitch so player can't loop upside-down.
+        if (theta >  1.4f) theta =  1.4f;
+        if (theta < -1.4f) theta = -1.4f;
 
+        // Terry: theta1=Wrap(theta1); theta=Wrap(theta); theta2=Wrap(theta2);
+        theta1 = Wrap(theta1);
+        theta  = Wrap(theta);
+        theta2 = Wrap(theta2);
+
+        // Terry: '\n' branch cleans up and re-inits.
+        if (shrine_key_pressed(BTN_A)) {
+            Init_EagleDive();
+            last = shrine_ms();
+            continue;
+        }
+
+        // Terry's AnimateTask advances every ANIMATE_MS=10.
         uint32_t now = shrine_ms();
-        float dt = (now - last) / 1000.0f;
-        if (dt > 0.08f) dt = 0.08f;
+        float mS = (float)(now - last);
+        if (mS > 80.0f) mS = 80.0f;
         last = now;
+        AnimateStep(mS);
+        CheckGameOver();
 
-        update_camera(dt, boost);
-        int horizon = BASE_HORIZON + (int)(s_pitch * 240.0f);
-        if (horizon < 0)   horizon = 0;
+        // Terry's BSPEagleDive selects background color: BLACK underwater
+        // (dead), BLUE if underwater but on water, LTCYAN in air.
+        int gx, gy, h_over;
+        cam_grid(&gx, &gy, &h_over);
+        uint16_t bk = C(C_LTCYAN);
+        if (h_over < 0) {
+            if (elevations[gy][gx] > WATER_ELEVATION * MAP_SCALE) bk = C(C_BLACK);
+            else                                                  bk = C(C_BLUE);
+        }
+        // Horizon moves DOWN when climbing (theta > 0) and UP when
+        // diving (theta < 0) — standard flight-sim: you see more sky
+        // when nosed up, more ground when nosed down.
+        int horizon = SCREEN_H / 2 + (int)(theta * 120.0f);
+        if (horizon < 0) horizon = 0;
         if (horizon > SCREEN_H) horizon = SCREEN_H;
-        render_frame();
-        render_fish(horizon);
-        render_talons();
-        render_hud(now);
 
+        // Terry: "if (height>=0 && !(-pi/4<=Wrap(theta-pi)<pi/4)) draw scene"
+        // i.e. only render terrain when not looking straight up.
+        bool draw_scene = (h_over >= 0);
+        if (draw_scene) {
+            // Sky above horizon (Terry's LTCYAN), haze below (LTGREEN).
+            for (int y = 0; y < horizon; y++)
+                fb_hline(0, y, SCREEN_W, C(C_LTCYAN));
+            for (int y = horizon; y < SCREEN_H; y++)
+                fb_hline(0, y, SCREEN_W, C(C_LTGREEN));
+            RenderTerrain(horizon);
+            RenderFish(horizon);
+        } else {
+            // Below terrain: solid backdrop (BLACK for dead, BLUE for water)
+            for (int y = 0; y < SCREEN_H; y++)
+                fb_hline(0, y, SCREEN_W, bk);
+        }
+        RenderHUD();
         display_present_full(s_fb);
-
-        // No shrine_sleep_ms — the SPI push is the natural frame gate.
     }
 }

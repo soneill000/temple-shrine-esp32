@@ -17,10 +17,39 @@
 #include "hw.h"
 #include "palette.h"
 #include "font8x8.h"
+#include "display.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+
+// Squirt used to run direct-to-display via shrine_*: every fill_rect,
+// line, circle was its own SPI transaction. With ~300 draw calls per
+// frame (hills + hose + drops + faucet), the game ran at single-digit
+// fps. Now we compose the whole frame in scene_fb (PSRAM) and blit
+// once per frame via display_present_full. Same pattern the After
+// Egypt scenes use.
+#include "scene_fb.h"
+#define s_fb g_scene_fb
+
+// Terry's Mountain sprite (BI=1 in Mountain.HC's tail): a 640x118
+// SPT_BITMAP we already ship for After Egypt. Used here for Squirt's
+// hills backdrop — writes go into s_fb, so the ~75K pixel iteration
+// runs at PSRAM speed, not SPI-per-pixel like the earlier version.
+#include "sprite_mountain.h"
+
+// Second PSRAM framebuffer used as a static backdrop cache. Painted
+// ONCE at scene entry with sky + hills + ground + faucet, then
+// memcpy'd into s_fb at the start of every frame — so the mountain
+// pixel iteration doesn't repeat and the frame time stays constant
+// (avoids the gradual slowdown we were seeing).
+#ifdef ESP_PLATFORM
+  #include "esp_attr.h"
+  EXT_RAM_BSS_ATTR static uint16_t s_backdrop[SCREEN_W * SCREEN_H];
+#else
+  static uint16_t s_backdrop[SCREEN_W * SCREEN_H];
+#endif
+static bool s_backdrop_built = false;
 
 #define N_HOSE     12
 #define N_DROPS    48
@@ -133,38 +162,162 @@ static void spawn_drop(void)
     }
 }
 
-// --- Drawing ---
+// --- Framebuffer drawing helpers (compose into s_fb, blit once) ---
+
+static inline uint16_t rgb(color_t c) { return PAL_RGB565[c & 15]; }
+
+static inline void fb_pixel(int x, int y, color_t c)
+{
+    if ((unsigned)x < (unsigned)SCREEN_W && (unsigned)y < (unsigned)SCREEN_H)
+        s_fb[y * SCREEN_W + x] = rgb(c);
+}
+static void fb_fill_rect(int x, int y, int w, int h, color_t c)
+{
+    if (w <= 0 || h <= 0) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > SCREEN_W) w = SCREEN_W - x;
+    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    if (w <= 0 || h <= 0) return;
+    uint16_t v = rgb(c);
+    for (int j = 0; j < h; j++) {
+        uint16_t *p = &s_fb[(y + j) * SCREEN_W + x];
+        for (int i = 0; i < w; i++) p[i] = v;
+    }
+}
+static inline void fb_hline(int x, int y, int w, color_t c) { fb_fill_rect(x, y, w, 1, c); }
+static inline void fb_vline(int x, int y, int h, color_t c) { fb_fill_rect(x, y, 1, h, c); }
+static void fb_rect(int x, int y, int w, int h, color_t c)
+{
+    fb_hline(x,         y,         w, c);
+    fb_hline(x,         y + h - 1, w, c);
+    fb_vline(x,         y,         h, c);
+    fb_vline(x + w - 1, y,         h, c);
+}
+static void fb_line(int x0, int y0, int x1, int y1, color_t c)
+{
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int dy = -(y1 > y0 ? y1 - y0 : y0 - y1);
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (1) {
+        fb_pixel(x0, y0, c);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+static void fb_fill_circle(int cx, int cy, int r, color_t c)
+{
+    int r2 = r * r;
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = 0;
+        while ((dx + 1) * (dx + 1) + dy * dy <= r2) dx++;
+        fb_fill_rect(cx - dx, cy + dy, 2 * dx + 1, 1, c);
+    }
+}
+static void fb_circle(int cx, int cy, int r, color_t c)
+{
+    int x = 0, y = r, d = 3 - 2 * r;
+    while (y >= x) {
+        fb_pixel(cx + x, cy + y, c); fb_pixel(cx - x, cy + y, c);
+        fb_pixel(cx + x, cy - y, c); fb_pixel(cx - x, cy - y, c);
+        fb_pixel(cx + y, cy + x, c); fb_pixel(cx - y, cy + x, c);
+        fb_pixel(cx + y, cy - x, c); fb_pixel(cx - y, cy - x, c);
+        x++;
+        if (d > 0) { y--; d += 4 * (x - y) + 10; } else d += 4 * x + 6;
+    }
+}
+static void fb_putc(int x, int y, char ch, color_t fg, color_t bg)
+{
+    uint8_t code = (uint8_t)ch;
+    if (code >= 128) code = ' ';
+    const uint8_t *g = FONT8X8[code];
+    for (int row = 0; row < 8; row++) {
+        uint8_t bits = g[row];
+        for (int col = 0; col < 8; col++) {
+            fb_pixel(x + col, y + row, (bits & (1 << col)) ? fg : bg);
+        }
+    }
+}
+static void fb_puts(int col, int row, const char *s, color_t fg, color_t bg)
+{
+    int x = col * GLYPH_W, y = row * GLYPH_H;
+    while (*s) { fb_putc(x, y, *s++, fg, bg); x += GLYPH_W; }
+}
+static void fb_puts_centered(int row, const char *s, color_t fg, color_t bg)
+{
+    int n = 0; while (s[n]) n++;
+    int x = (SCREEN_W - n * GLYPH_W) / 2;
+    int y = row * GLYPH_H;
+    while (*s) { fb_putc(x, y, *s++, fg, bg); x += GLYPH_W; }
+}
+static inline void fb_clear(color_t c)
+{
+    uint16_t v = rgb(c);
+    int n = SCREEN_W * SCREEN_H;
+    for (int i = 0; i < n; i++) s_fb[i] = v;
+}
+
+// --- Scene draw ---
 
 static void draw_faucet(void)
 {
-    // Pipe rising out of the top left of the ground plane, up to the faucet.
-    shrine_fill_rect(FAUCET_X - 3, FAUCET_Y, 6, GROUND_Y - FAUCET_Y, C_DKGRAY);
-    shrine_rect    (FAUCET_X - 3, FAUCET_Y, 6, GROUND_Y - FAUCET_Y, C_BLACK);
-    // Faucet head.
-    shrine_fill_circle(FAUCET_X, FAUCET_Y, 5, C_LTGRAY);
-    shrine_circle    (FAUCET_X, FAUCET_Y, 5, C_BLACK);
+    fb_fill_rect(FAUCET_X - 3, FAUCET_Y, 6, GROUND_Y - FAUCET_Y, C_DKGRAY);
+    fb_rect    (FAUCET_X - 3, FAUCET_Y, 6, GROUND_Y - FAUCET_Y, C_BLACK);
+    fb_fill_circle(FAUCET_X, FAUCET_Y, 5, C_LTGRAY);
+    fb_circle    (FAUCET_X, FAUCET_Y, 5, C_BLACK);
 }
 
 static void draw_ground(void)
 {
-    shrine_hline(0, GROUND_Y, SCREEN_W, C_YELLOW);
-    shrine_fill_rect(0, GROUND_Y + 1, SCREEN_W, SCREEN_H - GROUND_Y - 1, C_BROWN);
+    fb_hline(0, GROUND_Y, SCREEN_W, C_YELLOW);
+    fb_fill_rect(0, GROUND_Y + 1, SCREEN_W, SCREEN_H - GROUND_Y - 1, C_BROWN);
+}
+
+// Terry's Mountain BI=1 sprite (SPT_BITMAP 640x118), sampled 2:1 so
+// its 640 Terry pixels land in our 320 fb pixels. Anchor sits so the
+// bottom of the mountain silhouette lands right on the ground line at
+// GROUND_Y. This is the "correct" hill art the user wanted back —
+// what was slow before because it went pixel-by-pixel over SPI. Now
+// it writes to s_fb (PSRAM), so the full 75K-pixel iteration is
+// fast enough for real-time.
+static void draw_hills_backdrop(void)
+{
+    // Header layout: 1 byte op + 4 i32 x + 4 i32 y + 4 i32 w + 4 i32 h.
+    const uint8_t *px  = &SPRITE_MOUNTAIN_BI_1[17];
+    const int      W   = 640;                // Terry width
+    const int      H   = 118;                // Terry height
+    const int      Ws  = 640;                // stride (already mult of 8)
+    // Place mountain at the top of the playfield (below chrome text
+    // rows 0..2). Sampled 2:1 the sprite is 320x59 fb pixels; anchor
+    // y=20 puts its top edge just under the chrome and its bottom at
+    // ~y=79, leaving the whole area below for the hose and drops.
+    const int      dy0 = 20;
+    for (int r = 0; r < H; r += 2) {
+        int fy = dy0 + (r >> 1);
+        if ((unsigned)fy >= (unsigned)SCREEN_H) continue;
+        for (int c = 0; c < W; c += 2) {
+            uint8_t p = px[r * Ws + c];
+            if (p == 0xFF) continue;
+            if (p < 16) fb_pixel(c >> 1, fy, (color_t)p);
+        }
+    }
 }
 
 static void draw_hose(void)
 {
-    // Thick hose: filled circles at each mass plus lines between them.
     for (int i = 0; i < N_HOSE - 1; i++) {
         int x1 = (int)s_hose[i].x,   y1 = (int)s_hose[i].y;
         int x2 = (int)s_hose[i+1].x, y2 = (int)s_hose[i+1].y;
-        // Draw three parallel lines for a thick hose.
-        shrine_line(x1, y1, x2, y2, C_GREEN);
-        shrine_line(x1, y1 - 1, x2, y2 - 1, C_GREEN);
-        shrine_line(x1, y1 + 1, x2, y2 + 1, C_GREEN);
+        fb_line(x1, y1,     x2, y2,     C_GREEN);
+        fb_line(x1, y1 - 1, x2, y2 - 1, C_GREEN);
+        fb_line(x1, y1 + 1, x2, y2 + 1, C_GREEN);
     }
-    // Nozzle head.
-    shrine_fill_circle((int)s_nozzle_x, (int)s_nozzle_y, 4, C_LTGREEN);
-    shrine_circle    ((int)s_nozzle_x, (int)s_nozzle_y, 4, C_BLACK);
+    fb_fill_circle((int)s_nozzle_x, (int)s_nozzle_y, 4, C_LTGREEN);
+    fb_circle    ((int)s_nozzle_x, (int)s_nozzle_y, 4, C_BLACK);
 }
 
 static void draw_drops(void)
@@ -172,37 +325,58 @@ static void draw_drops(void)
     for (int i = 0; i < N_DROPS; i++) {
         if (!s_drops[i].active) continue;
         int x = (int)s_drops[i].x, y = (int)s_drops[i].y;
-        shrine_pixel(x,     y,     C_LTCYAN);
-        shrine_pixel(x + 1, y,     C_LTCYAN);
-        shrine_pixel(x,     y + 1, C_WHITE);
+        fb_pixel(x,     y,     C_LTCYAN);
+        fb_pixel(x + 1, y,     C_LTCYAN);
+        fb_pixel(x,     y + 1, C_WHITE);
     }
 }
 
 static void draw_chrome(void)
 {
-    shrine_clear(C_BG);
-    shrine_puts_centered(1, "*  SQUIRT  *", C_YELLOW, C_BG);
-    shrine_puts_centered(2, "AIM THE HOSE",  C_LTCYAN, C_BG);
-    shrine_puts_centered(TEXT_ROWS - 1,
-                         "ARROWS AIM   A JET   BOOT EXIT",
-                         C_LTGRAY, C_BG);
+    fb_puts_centered(1, "*  SQUIRT  *", C_YELLOW, C_BG);
+    fb_puts_centered(2, "AIM THE HOSE",  C_LTCYAN, C_BG);
+    fb_puts_centered(TEXT_ROWS - 1,
+                     "ARROWS AIM   A JET   BOOT EXIT",
+                     C_LTGRAY, C_BG);
+}
+
+// Build the static backdrop (sky + hills + ground + faucet + chrome
+// text) into s_backdrop once. Everything painted here is stationary
+// and can be blitted verbatim each frame.
+static void build_backdrop(void)
+{
+    // Sky (LTCYAN) above the mountain silhouette; yellow desert below.
+    // Terry's Mountain sprite has transparent (0xFF) pixels around its
+    // silhouette so the sky color shows through the top half.
+    fb_fill_rect(0, 0,  SCREEN_W, 80, C_LTCYAN);
+    fb_fill_rect(0, 80, SCREEN_W, GROUND_Y - 80, C_YELLOW);
+    draw_hills_backdrop();
+    draw_ground();
+    draw_faucet();
+    draw_chrome();
+    // Snapshot s_fb into s_backdrop for the per-frame memcpy path.
+    memcpy(s_backdrop, s_fb, SCREEN_W * SCREEN_H * sizeof(uint16_t));
+    s_backdrop_built = true;
 }
 
 static void draw_playfield(void)
 {
-    // Clear the play area (below the header, above the hint).
-    shrine_fill_rect(0, 24, SCREEN_W, SCREEN_H - 32, PAL_RGB565[C_BG]);
-    draw_ground();
-    draw_faucet();
+    if (!s_backdrop_built) build_backdrop();
+    // Fast path: memcpy the cached static backdrop (sky + hills +
+    // ground + faucet + chrome). Then overlay only the dynamic parts
+    // (hose, drops, nozzle). Frame time is now constant regardless of
+    // physics state, which fixes the gradual slowdown.
+    memcpy(s_fb, s_backdrop, SCREEN_W * SCREEN_H * sizeof(uint16_t));
     draw_hose();
     draw_drops();
+    display_present_full(s_fb);
 }
 
 void game_squirt_run(void)
 {
     reset();
-    draw_chrome();
-    draw_playfield();
+    s_backdrop_built = false;   // rebuild backdrop each fresh scene entry
+    draw_playfield();   // paints chrome + backdrop + entities and blits
 
     uint32_t last = shrine_ms();
     uint32_t drop_accum = 0;

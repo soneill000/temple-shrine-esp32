@@ -14,24 +14,25 @@
 
 typedef struct {
     const char *name;
-    const char *desc;
     void (*run)(void);
 } menu_entry_t;
 
+// Order: After Egypt first (biggest port), then Talons / Oracle / Hymn,
+// then Bible reader, then the rest of the game roster.
 static const menu_entry_t ENTRIES[] = {
-    { "ORACLE",     "SPEAK TO THE RNG",     game_oracle_run     },
-    { "HYMN",       "SING PRAISES",         game_hymn_run       },
-    { "AFTER EGYPT","MOSES WANDERS   (TERRY)",game_afteregypt_run },
-    { "TALONS",     "FLY THE HEIGHTS",      game_talons_run     },
-    { "CHRONICLE",  "READ THE SCROLLS",     game_chronicle_run  },
-    { "DIGITS",     "MEMORY  (TERRY PORT)", game_digits_run     },
-    { "BOMBERGOLF", "BOMB RUN (TERRY PORT)",game_bombergolf_run },
-    { "SQUIRT",     "FOUNTAIN (TERRY PORT)",game_squirt_run     },
-    { "RAINDROPS",  "DROPLETS (TERRY PORT)",game_raindrops_run  },
-    { "WHAP",       "SMITE THE DEMONS",     game_whap_run       },
-    { "FLAPBAT",    "EAT BUGS (TERRY PORT)",game_flapbat_run    },
-    { "SLIDER",     "SLIDING TILES",        game_slider_run     },
-    { "TICTACTOE",  "BATTLE THE FALLEN",    game_tictactoe_run  },
+    { "AFTER EGYPT",     game_afteregypt_run },
+    { "EAGLE DIVE",      game_talons_run     },
+    { "HOLYMESH",        game_lora_run       },
+    { "ORACLE",          game_oracle_run     },
+    { "HYMN",            game_hymn_run       },
+    { "SCRIPTURE",       game_bible_run      },
+    { "HOLYC SHELL",     game_holyc_run      },
+    { "CHRONICLE",       game_chronicle_run  },
+    { "DIGITS",          game_digits_run     },
+    { "BOMBERGOLF",      game_bombergolf_run },
+    { "SQUIRT",          game_squirt_run     },
+    { "WHAP",            game_whap_run       },
+    { "BUGBIRD",         game_bugbird_run    },
 };
 #define N_ENTRIES (int)(sizeof(ENTRIES)/sizeof(ENTRIES[0]))
 
@@ -66,34 +67,25 @@ static void draw_header(void)
 
 static void draw_entries(void)
 {
+    // One row per entry so all 13 items fit between the header (rows
+    // 0-3) and the footer hints (row 21). Fixes the previous layout
+    // where the last entry rendered off the bottom of the screen.
     const int start_row = 5;
+    // Clear the whole list region before repainting.
+    shrine_fill_rect(0, start_row * GLYPH_H,
+                     SCREEN_W, N_ENTRIES * GLYPH_H,
+                     PAL_RGB565[C_BG]);
     for (int i = 0; i < N_ENTRIES; i++) {
-        int row = start_row + i * 2;
-        // Clear the row background first.
-        shrine_fill_rect(0, row * GLYPH_H, SCREEN_W, GLYPH_H, PAL_RGB565[C_BG]);
-
-        color_t fg = (i == s_sel) ? C_BG    : C_WHITE;
+        int row = start_row + i;
+        color_t fg = (i == s_sel) ? C_BG     : C_WHITE;
         color_t bg = (i == s_sel) ? C_YELLOW : C_BG;
-
-        // Selection marker (arrow) or space.
-        if (i == s_sel) {
-            shrine_putc(2, row, G_ARROW[0], C_LTGREEN, C_BG);
-        }
-
-        // Fill the row background if selected.
         if (i == s_sel) {
             shrine_fill_rect(4 * GLYPH_W, row * GLYPH_H,
                              (TEXT_COLS - 6) * GLYPH_W, GLYPH_H,
                              PAL_RGB565[C_YELLOW]);
+            shrine_putc(2, row, G_ARROW[0], C_LTGREEN, C_BG);
         }
-
-        // Name (left-aligned in the row area).
-        shrine_puts(4,  row, ENTRIES[i].name, fg, bg);
-        // Description (right-aligned).
-        int desc_len = (int)strlen(ENTRIES[i].desc);
-        int desc_col = TEXT_COLS - 2 - desc_len;
-        if (desc_col < 15) desc_col = 15;
-        shrine_puts(desc_col, row, ENTRIES[i].desc, fg, bg);
+        shrine_puts(4, row, ENTRIES[i].name, fg, bg);
     }
 }
 

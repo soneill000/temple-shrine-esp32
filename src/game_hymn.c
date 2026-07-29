@@ -41,6 +41,12 @@ static const hymn_t HYMNS[] = {
     { "HOW GREAT THOU ART","C. BOBERG (1885)",
       HYMN_HOW_GREAT,
       sizeof(HYMN_HOW_GREAT)/sizeof(HYMN_HOW_GREAT[0]) },
+    { "PARANOID",         "BLACK SABBATH (1970) - TERRY'S PICK",
+      HYMN_PARANOID,
+      sizeof(HYMN_PARANOID)/sizeof(HYMN_PARANOID[0]) },
+    { "ENTER SANDMAN",    "METALLICA (1991) - TERRY'S PICK",
+      HYMN_ENTER_SANDMAN,
+      sizeof(HYMN_ENTER_SANDMAN)/sizeof(HYMN_ENTER_SANDMAN[0]) },
 };
 #define N_HYMNS (int)(sizeof(HYMNS)/sizeof(HYMNS[0]))
 

@@ -333,10 +333,15 @@ static inline int32_t rd_i32(const uint8_t *b, int o)
                    | ((uint32_t)b[o+3] << 24));
 }
 
-void Sprite3(CDC *dc, int x, int y, int z,
-             const uint8_t *stream, unsigned size)
+// Round a scaled coordinate to int, matching what a uniform scale
+// applied via Terry's Mat4x4Scale would produce (nearest-integer).
+static inline int rs(int v, float s) { return (int)(v * s + (v >= 0 ? 0.5f : -0.5f)); }
+
+void Sprite3S(CDC *dc, int x, int y, int z, float scale,
+              const uint8_t *stream, unsigned size)
 {
     if (!dc || !stream || size == 0) return;
+    if (scale <= 0.0f) return;
     unsigned off = 0;
     int guard = 400;
     while (off < size && guard-- > 0) {
@@ -351,81 +356,122 @@ void Sprite3(CDC *dc, int x, int y, int z,
             if (off + 2 >= size) return;
             dc->color = (color_t)(stream[off + 1] & 15);
             off += 3; break;
-        case SPT_THICK:
+        case SPT_THICK: {
             if (off + 4 >= size) return;
-            dc->thick = rd_i32(stream, off + 1);
-            if (dc->thick < 1) dc->thick = 1;
+            int t = rd_i32(stream, off + 1);
+            t = (int)(t * scale + 0.5f);
+            if (t < 1) t = 1;
+            dc->thick = t;
             off += 5; break;
+        }
         case SPT_TRANSFORM_ON:  dc->flags |=  DCF_TRANSFORMATION; off += 1; break;
         case SPT_TRANSFORM_OFF: dc->flags &= ~DCF_TRANSFORMATION; off += 1; break;
         case SPT_PT:
         case SPT_SHIFT: {
             if (off + 8 >= size) return;
-            int px = rd_i32(stream, off + 1) + x;
-            int py = rd_i32(stream, off + 5) + y;
+            int px = rs(rd_i32(stream, off + 1), scale) + x;
+            int py = rs(rd_i32(stream, off + 5), scale) + y;
             GrPlot3(dc, px, py, z);
             off += 9; break;
         }
         case SPT_LINE:
         case SPT_ARROW: {
             if (off + 16 >= size) return;
-            int ax = rd_i32(stream, off +  1) + x;
-            int ay = rd_i32(stream, off +  5) + y;
-            int bx = rd_i32(stream, off +  9) + x;
-            int by = rd_i32(stream, off + 13) + y;
+            int ax = rs(rd_i32(stream, off +  1), scale) + x;
+            int ay = rs(rd_i32(stream, off +  5), scale) + y;
+            int bx = rs(rd_i32(stream, off +  9), scale) + x;
+            int by = rs(rd_i32(stream, off + 13), scale) + y;
             GrLine3(dc, ax, ay, z, bx, by, z);
             off += 17; break;
         }
         case SPT_RECT: {
             if (off + 16 >= size) return;
-            int rx = rd_i32(stream, off +  1) + x;
-            int ry = rd_i32(stream, off +  5) + y;
-            int rw = rd_i32(stream, off +  9);
-            int rh = rd_i32(stream, off + 13);
+            int rx = rs(rd_i32(stream, off +  1), scale) + x;
+            int ry = rs(rd_i32(stream, off +  5), scale) + y;
+            int rw = rs(rd_i32(stream, off +  9), scale);
+            int rh = rs(rd_i32(stream, off + 13), scale);
             GrFillRect(dc, rx, ry, rw, rh);
             off += 17; break;
         }
         case SPT_CIRCLE: {
             if (off + 12 >= size) return;
-            int cx = rd_i32(stream, off + 1) + x;
-            int cy = rd_i32(stream, off + 5) + y;
-            int cr = rd_i32(stream, off + 9);
-            GrCircle(dc, cx, cy, cr);
+            int ccx = rs(rd_i32(stream, off + 1), scale) + x;
+            int ccy = rs(rd_i32(stream, off + 5), scale) + y;
+            int cr  = rs(rd_i32(stream, off + 9), scale);
+            GrCircle(dc, ccx, ccy, cr);
             off += 13; break;
         }
         case SPT_FLOOD_FILL:
         case SPT_FLOOD_FILL_NOT: {
             if (off + 8 >= size) return;
-            int fx = rd_i32(stream, off + 1) + x;
-            int fy = rd_i32(stream, off + 5) + y;
+            int fx = rs(rd_i32(stream, off + 1), scale) + x;
+            int fy = rs(rd_i32(stream, off + 5), scale) + y;
             GrFloodFill(dc, fx, fy);
             off += 9; break;
         }
         case SPT_BITMAP: {
             if (off + 16 >= size) return;
-            int bx = rd_i32(stream, off +  1) + x;
-            int by = rd_i32(stream, off +  5) + y;
+            int bx = rs(rd_i32(stream, off +  1), scale) + x;
+            int by = rs(rd_i32(stream, off +  5), scale) + y;
             int bw = rd_i32(stream, off +  9);
             int bh = rd_i32(stream, off + 13);
             unsigned pix_off = off + 17;
-            if (bw <= 0 || bh <= 0 || bw > 300 || bh > 300) return;
-            if (pix_off + (unsigned)(bw * bh) > size) return;
-            for (int r = 0; r < bh; r++) {
-                for (int c = 0; c < bw; c++) {
-                    uint8_t p = stream[pix_off + r * bw + c];
-                    if (p == 0xFF) continue;
-                    if (p < 16) {
-                        int spx = sx(dc, bx + c);
-                        int spy = sy(dc, by + r);
-                        put_px(dc, spx, spy, (color_t)p);
+            // Terry's AESplash (canewsin dump) is 640x589 — taller than
+            // his 640x480 canvas — with a negative y anchor (-117) that
+            // shifts the extra rows above the visible area. Bump the h
+            // clamp so we don't reject the splash bitmap outright.
+            if (bw <= 0 || bh <= 0 || bw > 640 || bh > 640) return;
+            int stride = (bw + 7) & ~7;
+            if (pix_off + (unsigned)(stride * bh) > size) return;
+
+            if (scale >= 0.999f && scale <= 1.001f) {
+                // Fast path: identity scale, 1:1 pixel copy.
+                for (int r = 0; r < bh; r++) {
+                    for (int c = 0; c < bw; c++) {
+                        uint8_t p = stream[pix_off + r * stride + c];
+                        if (p == 0xFF) continue;
+                        if (p < 16) {
+                            int spx = sx(dc, bx + c);
+                            int spy = sy(dc, by + r);
+                            put_px(dc, spx, spy, (color_t)p);
+                        }
+                    }
+                }
+            } else {
+                // Scaled path: dest-side loop, nearest-neighbor sample
+                // from the source bitmap.
+                int dw = (int)(bw * scale + 0.5f);
+                int dh = (int)(bh * scale + 0.5f);
+                if (dw < 1) dw = 1;
+                if (dh < 1) dh = 1;
+                float inv = 1.0f / scale;
+                for (int dr = 0; dr < dh; dr++) {
+                    int sr = (int)(dr * inv);
+                    if (sr >= bh) sr = bh - 1;
+                    for (int dcol = 0; dcol < dw; dcol++) {
+                        int sc = (int)(dcol * inv);
+                        if (sc >= bw) sc = bw - 1;
+                        uint8_t p = stream[pix_off + sr * stride + sc];
+                        if (p == 0xFF) continue;
+                        if (p < 16) {
+                            int fx = sx(dc, bx + dcol);
+                            int fy = sy(dc, by + dr);
+                            put_px(dc, fx, fy, (color_t)p);
+                        }
                     }
                 }
             }
-            off = pix_off + bw * bh;
+            off = pix_off + stride * bh;
             break;
         }
         default:
             return;
         }
     }
+}
+
+void Sprite3(CDC *dc, int x, int y, int z,
+             const uint8_t *stream, unsigned size)
+{
+    Sprite3S(dc, x, y, z, 1.0f, stream, size);
 }

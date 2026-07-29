@@ -78,3 +78,10 @@ color_t GrPeek(CDC *dc, int x, int y);
 //     lands with correct color, thickness, and transform. ---
 void Sprite3(CDC *dc, int x, int y, int z,
              const uint8_t *stream, unsigned size);
+
+// Same as Sprite3, but multiplies every opcode's relative coordinate
+// and length by `scale` before drawing (and scales bitmap pixels
+// nearest-neighbor). Used by 2.5D scenes (Camp, HorebBMP) that render
+// the same sprite at many depth-dependent sizes.
+void Sprite3S(CDC *dc, int x, int y, int z, float scale,
+              const uint8_t *stream, unsigned size);

@@ -18,3 +18,5 @@ Thumbs.db
 # Sprite decoder byproducts
 tools/*_sprites_out/
 tools/err.txt
+tools/__pycache__/
+tools/*_out/

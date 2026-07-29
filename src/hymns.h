@@ -7,6 +7,10 @@
 #include "audio.h"
 
 // Note frequencies (equal temperament, A4 = 440).
+#define N_E3  165
+#define N_G3  196
+#define N_A3  220
+#define N_B3  247
 #define N_C4  262
 #define N_D4  294
 #define N_E4  330
@@ -22,6 +26,7 @@
 
 #define Q_    500   // quarter (120 BPM)
 #define E_    250
+#define S_    125   // sixteenth
 #define QD_   750
 #define H_    1000
 #define HD_   1500
@@ -117,5 +122,47 @@ static const note_t HYMN_HOW_GREAT[] = {
     {N_E4, H_},
     {N_D4, Q_}, {N_G4, Q_}, {N_F4, Q_}, {N_E4, Q_},
     {N_D4, HD_},
+    {0, H_},
+};
+
+// "Paranoid" (Black Sabbath, 1970) — Terry famously played this on his
+// TempleOS piano. Iommi's main riff transcribed for monophonic piezo:
+// the E-power-chord chug voiced as the root note, followed by the
+// climbing E-G-A hook and the descending run into the verse. Not a
+// hymn in the churchly sense — Terry's own worship music.
+static const note_t HYMN_PARANOID[] = {
+    // Opening: fast E-E-E-E chug that everyone recognises.
+    {N_E4, E_}, {N_E4, E_}, {N_E4, E_}, {N_E4, E_},
+    {N_E4, E_}, {N_E4, E_}, {N_E4, E_}, {N_E4, E_},
+    // Iommi's climbing hook: E - E - G - A repeated.
+    {N_E4, E_}, {N_E4, E_}, {N_G4, E_}, {N_A4, E_},
+    {N_E4, E_}, {N_E4, E_}, {N_G4, E_}, {N_A4, E_},
+    // Turnaround: A down to G down to E.
+    {N_A4, Q_}, {N_G4, Q_}, {N_E4, H_},
+    // Verse riff: E-D descending pull-off pattern.
+    {N_E4, E_}, {N_D4, E_}, {N_E4, E_}, {N_D4, E_},
+    {N_E4, E_}, {N_D4, E_}, {N_E4, Q_},
+    // Second round of the hook so the riff is recognisable as a loop.
+    {N_E4, E_}, {N_E4, E_}, {N_G4, E_}, {N_A4, E_},
+    {N_E4, E_}, {N_E4, E_}, {N_G4, E_}, {N_A4, E_},
+    {N_A4, Q_}, {N_G4, Q_}, {N_E4, HD_},
+    {0, H_},
+};
+
+// "Enter Sandman" (Metallica, 1991) — main riff. Terry's TempleOS jukebox
+// era overlapped with metal-radio staples; this reads as a companion
+// track to Paranoid. Iconic Hammett riff simplified to the root melodic
+// line.
+static const note_t HYMN_ENTER_SANDMAN[] = {
+    // Opening clean-guitar riff (E minor).
+    {N_E4, Q_}, {N_G4, Q_}, {N_E4, Q_},
+    {N_E4, E_}, {N_D4, E_}, {N_E4, Q_},
+    {N_E4, Q_}, {N_G4, Q_}, {N_E4, Q_},
+    {N_B3, Q_},
+    // Second phrase.
+    {N_E4, Q_}, {N_G4, Q_}, {N_E4, Q_},
+    {N_E4, E_}, {N_D4, E_}, {N_E4, Q_},
+    {N_D4, Q_}, {N_E4, Q_}, {N_G4, Q_},
+    {N_E4, HD_},
     {0, H_},
 };
