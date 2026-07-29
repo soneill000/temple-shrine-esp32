@@ -104,8 +104,13 @@
 #define COORDINATE_BITS  8
 
 #define WATER_ELEVATION  15     // Terry
-#define ROCK_ELEVATION   45     // Terry
-#define SNOW_ELEVATION   55     // Terry
+// Terry ran ROCK=45, SNOW=55 (a very narrow LTGREEN grass band). On the
+// badge that clustered most of the terrain into the darker GREEN rock
+// band and hills stopped reading as distinct layers. Widened the grass
+// band so low ground goes bright LTGREEN and only actual hill tops
+// pick up the darker GREEN, giving visible depth between ridges.
+#define ROCK_ELEVATION   52
+#define SNOW_ELEVATION   58
 
 // Terry: "Too big makes off-screen draws take place." -- not used in
 // our raycast port but retained as documentation.
@@ -428,7 +433,12 @@ static void RenderTerrain(int horizon)
         float z = 1.0f;
         float dz = 0.4f;
         const float FAR_Z = 260.0f;   // bumped from 160 for better draw distance
-        while (z < FAR_Z && ymax > horizon) {
+        // March out until we run out of view distance or paint-space.
+        // Terrain can rise ABOVE the horizon line — that's how hills
+        // occlude the sky. (Previous versions clamped screen_y to the
+        // horizon and exited on ymax<=horizon; that made the sky a
+        // fixed blue block that no hill could ever break through.)
+        while (z < FAR_Z && ymax > 0) {
             float wx = cwx + rx * z;
             float wy = cwy + ry * z;
             int gi = ((int)wx) & MAP_MASK;
@@ -443,7 +453,7 @@ static void RenderTerrain(int horizon)
             //  elevation, viewed from cam_h ~4000 at z=20, projects to
             //  a sensible pixel offset. Not a Terry constant.)
             if (screen_y < ymax) {
-                if (screen_y < horizon) screen_y = horizon;
+                if (screen_y < 0) screen_y = 0;
                 uint16_t col = PanelColorAt(elev, cell_hash(gi, gj));
                 fb_vline(x, screen_y, ymax - screen_y, col);
                 ymax = screen_y;
