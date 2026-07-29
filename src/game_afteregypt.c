@@ -1545,17 +1545,19 @@ static void scene_camp(void)
         const int cx = 320, cy = 240;
 
         // Backdrop:
-        //   sky    y = 0..200   LTCYAN
-        //   grass  y = 200..480 GREEN (Israelite encampment plain)
+        //   sky    y = 0..96    LTCYAN  (~1/5 of the panel)
+        //   grass  y = 96..480  GREEN   (~4/5 of the panel — camp plain
+        //                                fills nearly the whole scene)
         // Terry's Camp.HC draws Mountain BI=1 at a far-perspective anchor
         // (z = -16*CAMP_WIDTH); on his monitor it renders as a distant
         // silhouette on the horizon. On badge it fills the sky and hides
         // the tents, so we skip it and leave the scene as plain grass +
         // sky per user's memory of Terry's rendering.
+        const int camp_horizon = 96;
         gr_dc.color = C_LTCYAN;
-        GrFillRect(&gr_dc, 0, 0, 640, 200);
+        GrFillRect(&gr_dc, 0, 0, 640, camp_horizon);
         gr_dc.color = C_GREEN;
-        GrFillRect(&gr_dc, 0, 200, 640, 480 - 200);
+        GrFillRect(&gr_dc, 0, camp_horizon, 640, 480 - camp_horizon);
 
         // Ground plane grid — Terry draws 4 gray edges of the camp
         // rectangle in perspective at thickness 6. We do the same.
@@ -1735,7 +1737,8 @@ typedef enum {
 } horeb_type_t;
 
 #define HOREB_OBJS       160   // Terry ran 256; badge cranked to 160 for density
-#define HOREB_PEBBLES    900   // Terry ran 4096; badge cranked to 900
+#define HOREB_PEBBLES    250   // Terry ran 4096; badge keeps it low so the
+                               // yellow sand reads flat (user preference)
 #define HOREB_TOTAL      (HOREB_OBJS + HOREB_PEBBLES)
 #define HOREB_BURNING    0     // obj[0] is Terry's O_BURNING_BUSH
 #define HOREB_SPAWN_HALF 3000  // objects spawn uniformly in [-half, +half]
@@ -1890,22 +1893,56 @@ static bool scene_mountain(void)
         gr_dc.color = C_YELLOW;
         GrFillCircle(&gr_dc, 50, 25, 14);
 
-        // Simple hill silhouettes — three brown triangle ridges rising
-        // in the middle of the frame that echo the zig-zag ascension
-        // path. Not Terry's mountain bitmap; matches user's memory of
-        // the scene as "simple drawings of hills, similar to the
-        // zig-zag path he ascends."
+        // Simple hill silhouettes — two ridges of brown triangles rising
+        // in front of the yellow desert. Filled by scanning each column
+        // between the ridge endpoints and painting from the ridge line
+        // down to the horizon, so they read as solid hills instead of
+        // just outlines against the split yellow/blue background. Not
+        // Terry's mountain bitmap; matches user's memory of the scene as
+        // "simple drawings of hills, similar to the zig-zag path he
+        // ascends."
+        static const int RIDGE_BACK_X[]  = {  30, 220, 420, 610, 640 };
+        static const int RIDGE_BACK_Y[]  = {   0, -90, -40, -70, -30 };
+        static const int RIDGE_FRONT_X[] = {  80, 300, 500, 640 };
+        static const int RIDGE_FRONT_Y[] = {   0, -130, -60, -20 };
+
+        // Back ridge — darker brown so the front ridge stands out.
         gr_dc.color = C_BROWN;
-        gr_dc.thick = 3;
-        // Back ridge — widest, shortest.
-        GrLine(&gr_dc,  30, horizon_y, 220, horizon_y - 90);
-        GrLine(&gr_dc, 220, horizon_y - 90, 420, horizon_y - 40);
-        GrLine(&gr_dc, 420, horizon_y - 40, 610, horizon_y - 70);
-        GrLine(&gr_dc, 610, horizon_y - 70, 640, horizon_y - 30);
-        // Front ridge — bigger peak, right of center.
-        GrLine(&gr_dc,  80, horizon_y, 300, horizon_y - 130);
-        GrLine(&gr_dc, 300, horizon_y - 130, 500, horizon_y - 60);
-        GrLine(&gr_dc, 500, horizon_y - 60, 640, horizon_y - 20);
+        for (int seg = 0; seg + 1 < (int)(sizeof(RIDGE_BACK_X)/sizeof(int)); seg++) {
+            int x0 = RIDGE_BACK_X[seg],     y0 = horizon_y + RIDGE_BACK_Y[seg];
+            int x1 = RIDGE_BACK_X[seg + 1], y1 = horizon_y + RIDGE_BACK_Y[seg + 1];
+            if (x1 <= x0) continue;
+            for (int x = x0; x <= x1; x++) {
+                int y = y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+                if (y < horizon_y) {
+                    GrFillRect(&gr_dc, x, y, 1, horizon_y - y);
+                }
+            }
+        }
+
+        // Front ridge — YELLOW fill with brown outline so it reads as a
+        // near hill in front of the darker back ridge. Same fill logic.
+        gr_dc.color = C_YELLOW;
+        for (int seg = 0; seg + 1 < (int)(sizeof(RIDGE_FRONT_X)/sizeof(int)); seg++) {
+            int x0 = RIDGE_FRONT_X[seg],     y0 = horizon_y + RIDGE_FRONT_Y[seg];
+            int x1 = RIDGE_FRONT_X[seg + 1], y1 = horizon_y + RIDGE_FRONT_Y[seg + 1];
+            if (x1 <= x0) continue;
+            for (int x = x0; x <= x1; x++) {
+                int y = y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+                if (y < horizon_y) {
+                    GrFillRect(&gr_dc, x, y, 1, horizon_y - y);
+                }
+            }
+        }
+        // Outline the front ridge in brown so it separates from the
+        // yellow desert below and reads as a distinct hill shape.
+        gr_dc.color = C_BROWN;
+        gr_dc.thick = 2;
+        for (int seg = 0; seg + 1 < (int)(sizeof(RIDGE_FRONT_X)/sizeof(int)); seg++) {
+            GrLine(&gr_dc,
+                   RIDGE_FRONT_X[seg],     horizon_y + RIDGE_FRONT_Y[seg],
+                   RIDGE_FRONT_X[seg + 1], horizon_y + RIDGE_FRONT_Y[seg + 1]);
+        }
         gr_dc.thick = 1;
 
         // Trail — Terry draws 8 brown line segments between waypoints.
@@ -2024,27 +2061,17 @@ static void scene_horeb(void)
         gr_dc.color = C_BROWN;
         GrFillRect(&gr_dc, 0, HOREB_HORIZON, 640, 3);
 
-        // Scattered sand pebbles across the mid-ground for depth cues.
-        // Two color bands (darker near, lighter far) so the ground has
-        // some tonal variation instead of a flat yellow slab.
-        for (int p = 0; p < 200; p++) {
-            int px = (p * 89) % 640;
-            int py = HOREB_HORIZON + 12 + ((p * 37) % (scr_h - HOREB_HORIZON - 20));
-            gr_dc.color = (py < HOREB_HORIZON + 60) ? C_DKGRAY : C_BROWN;
-            GrPlot(&gr_dc, px, py);
-        }
-
         // Distant dune silhouettes along the horizon — a few soft brown
-        // humps + a couple far-off palm-tree-shaped blobs. Purely visual
-        // (not part of the world objects), pinned to the sky/desert seam
-        // so they always sit at the horizon regardless of camera motion.
-        // Gives the eye something to lock onto besides empty sand.
+        // humps pinned to the sky/desert seam so they always sit at the
+        // horizon regardless of camera motion. Purely visual (not part
+        // of the world objects). Gives the eye something to lock onto
+        // besides empty sand while keeping the ground itself flat per
+        // user request (no mid-ground pebble noise, no grass tufts).
         gr_dc.color = C_BROWN;
         for (int d = 0; d < 6; d++) {
             int cx  = 40 + d * 110;
             int rw  = 60 + ((d * 17) % 40);
             int rh  = 8  + ((d * 11) % 6);
-            // Half-ellipse rising from horizon.
             for (int dy_ = 0; dy_ < rh; dy_++) {
                 float ny = (float)dy_ / (float)rh;
                 int half = (int)(rw * sqrtf(1.0f - ny * ny)) / 2;
@@ -2053,26 +2080,6 @@ static void scene_horeb(void)
                                cx - half, HOREB_HORIZON + 3 - dy_,
                                half * 2, 1);
                 }
-            }
-        }
-
-        // Grass tufts — small 3-4 pixel dark-green vertical clusters
-        // scattered in the near/mid ground. Not real world objects; just
-        // a texture pass. Placement is deterministic per frame_i band so
-        // they don't shimmer (using frame_i>>3 gives us a stable set that
-        // rerolls every 8 frames — matches how Terry's ambient noise
-        // reads on his monitor).
-        {
-            gr_dc.color = C_GREEN;
-            uint32_t seed_row = frame_i >> 4;   // reroll every 16 frames
-            for (int p = 0; p < 60; p++) {
-                int sx0 = (int)((p * 149 + seed_row * 71) % 640);
-                int sy0 = HOREB_HORIZON + 30
-                        + (int)((p * 233 + seed_row * 41) % (scr_h - HOREB_HORIZON - 40));
-                GrPlot(&gr_dc, sx0,     sy0);
-                GrPlot(&gr_dc, sx0,     sy0 - 1);
-                GrPlot(&gr_dc, sx0 + 1, sy0 - 1);
-                GrPlot(&gr_dc, sx0 - 1, sy0);
             }
         }
 
@@ -2539,20 +2546,24 @@ static void draw_ae_emblem_grdc(int cx, int cy, int half)
     }
 }
 
-// Terry's real AESplash artwork, extracted from canewsin's aiwnios
-// dump of the AfterEgypt app (iso/apps/afteregypt/aesplash.txt.z). One
-// SPT_BITMAP at 640x589 Terry pixels, anchor offset (0, -117) so the
-// scene bottom lands near y=472. Sprite3 walks the opcode stream
-// through templeshim, which scales down to the 320x240 badge fb via
-// gr_dc.scale=2 (set in the trailer's CDCInit above).
+// AESplash backdrop — plain LTCYAN sky + YELLOW ground.
+//
+// We do have Terry's extracted AESplash bitmap (canewsin aiwnios dump,
+// SPT_BITMAP 640x589), but it contains an elaborate mountain scene that
+// doesn't match the user's memory of Terry's actual splash rendering —
+// they recall it as classic Terry: yellow ground, blue sky, four TMsg
+// lines on top. So we paint the two rects manually and skip the sprite.
 static void trailer_paint_backdrop(uint32_t now)
 {
     (void)now;
-    // One draw call — Terry's literal splash art. No composition, no
-    // homage: the pixels are his. The four TMsg lines get overlaid on
-    // top by trailer_paint_msg().
-    Sprite3(&gr_dc, 0, 0, 0,
-            SPRITE_AESPLASH_BI_1, SPRITE_AESPLASH_BI_1_SIZE);
+    // Terry's canvas is 640x480. Horizon around 3/8 of the way down so
+    // there's more sky than ground — reads as "wilderness sky over
+    // desert" at a glance.
+    const int horizon = 180;
+    gr_dc.color = C_LTCYAN;
+    GrFillRect(&gr_dc, 0, 0, 640, horizon);
+    gr_dc.color = C_YELLOW;
+    GrFillRect(&gr_dc, 0, horizon, 640, 480 - horizon);
 }
 
 // Terry's TMsg — 16 Terry-px tall bordered box, blinking red/black

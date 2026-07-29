@@ -196,9 +196,9 @@ static void term_println(const char *s)
 
 static void draw_scanlines(void)
 {
-    // Faint horizontal bands every 3rd row — near-yellow so text stays
-    // readable but the background reads as CRT.
-    uint16_t band = rgb(C_BROWN);
+    // Faint horizontal bands every 3rd row — light-gray specks on the
+    // white bg so text stays readable but the panel reads as CRT.
+    uint16_t band = rgb(C_LTGRAY);
     for (int y = 0; y < SCREEN_H; y += 3) {
         uint16_t *p = &s_fb[y * SCREEN_W];
         for (int x = 0; x < SCREEN_W; x += 4) p[x] = band;
@@ -207,54 +207,55 @@ static void draw_scanlines(void)
 
 static void draw_static_flash(uint32_t now)
 {
-    // Every ~4.7 seconds paint a single-frame all-yellow blip so the
+    // Every ~4.7 seconds paint a single-frame all-white blip so the
     // terminal has that "monitor blinked" quirk Terry's videos had.
     // Two frames of duration so it registers at 30fps.
     uint32_t phase = now % 4700;
     if (phase < 66) {
-        fb_clear(C_YELLOW);
+        fb_clear(C_WHITE);
     }
 }
 
 static void render(int sel, uint32_t now)
 {
-    // Yellow background — Terry's Fs->text_attr = YELLOW<<4 + BLUE.
-    fb_clear(C_YELLOW);
+    // White background (was YELLOW in v1). Blue text stays — Terry's
+    // Fs->text_attr = WHITE<<4 + BLUE reads the same way visually.
+    fb_clear(C_WHITE);
     draw_scanlines();
 
     // Top border strip.
     fb_fill_rect(0, 0, SCREEN_W, GLYPH_H, C_BLUE);
     fb_puts_px((SCREEN_W - 22 * GLYPH_W) / 2, 0,
-               "HOLYC SHELL v1.0 -- FS/1", C_YELLOW, C_BLUE);
+               "HOLYC SHELL v1.0 -- FS/1", C_WHITE, C_BLUE);
 
     // Terminal scroll area (rows 2..21).
     for (int i = 0; i < TERM_ROWS && i < 20; i++) {
         if (s_term[i][0])
-            fb_puts(0, 2 + i, s_term[i], C_BLUE, C_YELLOW);
+            fb_puts(0, 2 + i, s_term[i], C_BLUE, C_WHITE);
     }
 
     // Prompt line with blinking underscore cursor.
     int prompt_row = 22;
-    fb_puts(0, prompt_row, ">", C_LTRED, C_YELLOW);
-    fb_puts(2, prompt_row, COMMANDS[sel].cmd, C_BLUE, C_YELLOW);
+    fb_puts(0, prompt_row, ">", C_LTRED, C_WHITE);
+    fb_puts(2, prompt_row, COMMANDS[sel].cmd, C_BLUE, C_WHITE);
     if ((now / 400) & 1) {
         int cmd_len = (int)strlen(COMMANDS[sel].cmd);
-        fb_puts(2 + cmd_len, prompt_row, "_", C_BLUE, C_YELLOW);
+        fb_puts(2 + cmd_len, prompt_row, "_", C_BLUE, C_WHITE);
     }
 
     // Bottom hint row.
     fb_fill_rect(0, (TEXT_ROWS - 1) * GLYPH_H, SCREEN_W, GLYPH_H, C_BLUE);
     fb_puts_px(2, (TEXT_ROWS - 1) * GLYPH_H,
                "U/D SELECT  A RUN  B CLS  BOOT EXIT",
-               C_YELLOW, C_BLUE);
+               C_WHITE, C_BLUE);
 
     // Selection hint (arrow at the prompt line).
     fb_puts_px(SCREEN_W - 12 * GLYPH_W, prompt_row * GLYPH_H,
-               "PICKED", C_LTRED, C_YELLOW);
+               "PICKED", C_LTRED, C_WHITE);
     char sel_buf[16];
     snprintf(sel_buf, sizeof(sel_buf), "%d/%d", sel + 1, N_COMMANDS);
     fb_puts_px(SCREEN_W - 5 * GLYPH_W, prompt_row * GLYPH_H,
-               sel_buf, C_BLUE, C_YELLOW);
+               sel_buf, C_BLUE, C_WHITE);
 
     draw_static_flash(now);
     display_present_full(s_fb);
