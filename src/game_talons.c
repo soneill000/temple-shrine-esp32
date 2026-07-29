@@ -143,6 +143,7 @@ static float   theta2;  // Terry: theta2 (roll,  initialized   0 deg)
 static float   speed;   // Terry: speed  (initialized 2.5)
 static bool    game_over;
 static uint32_t game_t0_ms;
+static uint32_t s_talon_swoop_ms;   // Start time of current talon swoop, 0 = idle.
 
 // -----------------------------------------------------------------------
 // Small RNG wrappers matching Terry's names.
@@ -525,6 +526,126 @@ static void RenderFish(int horizon)
 }
 
 // -----------------------------------------------------------------------
+// Eagle talons swoop -- homage overlay (Terry's eagledive.cpp.z doesn't
+// draw these; the reference screenshot from Terry's rendering does).
+//
+// Two big yellow eagle feet rise from below the panel, hold at their
+// grab position through a slight claw-curl motion, then retract. Total
+// swoop is ~1400 ms (350 rise / 700 hold / 350 retract). Called every
+// frame from RenderHUD; returns immediately if idle. Triggered by
+// setting s_talon_swoop_ms to the current time (done in Init_EagleDive
+// so the game opens with a swoop, and in the main loop on B press).
+// -----------------------------------------------------------------------
+#define TALON_SWOOP_MS   1400u
+#define TALON_RISE_MS     350u
+#define TALON_RETRACT_MS  350u
+#define TALON_TRUNK_H      68     // height of the visible foot trunk when fully deployed
+#define TALON_CLAW_H       26     // height of the claw fingers above the trunk top
+#define TALON_TRUNK_HALF_W 22     // half-width of foot trunk
+
+static void draw_one_foot(int fx, int fy_top, float grip)
+{
+    // fy_top is the y-coord of the highest point of the trunk (below the
+    // claws). If fy_top >= SCREEN_H, the foot is fully off-screen.
+    if (fy_top >= SCREEN_H) return;
+
+    uint16_t yel   = C(C_YELLOW);
+    uint16_t brown = C(C_BROWN);
+    uint16_t black = C(C_BLACK);
+
+    // ---- Trunk: fat yellow leg with horizontal segment banding ----
+    int trunk_bottom = fy_top + TALON_TRUNK_H;
+    if (trunk_bottom > SCREEN_H) trunk_bottom = SCREEN_H;
+    for (int y = fy_top; y < trunk_bottom; y++) {
+        if (y < 0) continue;
+        // Trunk widens slightly toward the bottom (ankle to foot).
+        int extra = (y - fy_top) / 6;
+        int half  = TALON_TRUNK_HALF_W + extra;
+        fb_hline(fx - half, y, half * 2, yel);
+        // Segment shading — a darker-yellow (brown) band every 8 px.
+        if (((y - fy_top) % 8) == 0 && y != fy_top) {
+            fb_hline(fx - half + 2, y, half * 2 - 4, brown);
+        }
+        // Trunk outline in black on the outer edges (readable against sky).
+        fb_pixel(fx - half - 1, y, black);
+        fb_pixel(fx + half,     y, black);
+    }
+
+    // ---- Claws: 4 curved yellow fingers rising above the trunk top ----
+    // Positions are relative to trunk center. Outer claws curve outward,
+    // inner claws point ~straight up. `grip` in [0,1] curls tips inward
+    // to sell the grab motion.
+    static const int CLAW_OFF[4] = { -18, -6, 6, 18 };
+    static const int CLAW_DIR[4] = {  -1,  0, 0,  1 }; // outward bias
+    for (int i = 0; i < 4; i++) {
+        int base_x = fx + CLAW_OFF[i];
+        int base_y = fy_top;
+        int tip_x  = base_x + (int)(CLAW_DIR[i] * 4 * (1.0f - grip))
+                             - (int)(CLAW_DIR[i] * 4 * grip);
+        int tip_y  = base_y - TALON_CLAW_H;
+        // Draw as a tapered triangle in yellow, brown tip.
+        for (int r = 0; r <= TALON_CLAW_H; r++) {
+            float t = (float)r / (float)TALON_CLAW_H;  // 0=base, 1=tip
+            int cx_ = base_x + (int)((tip_x - base_x) * t);
+            int half = (int)(6 * (1.0f - t));
+            if (half < 1) half = 1;
+            int y = base_y - r;
+            if (y < 0 || y >= SCREEN_H) continue;
+            fb_hline(cx_ - half, y, half * 2 + 1,
+                     (t > 0.75f) ? brown : yel);
+        }
+        // Sharp black outline at the tip point.
+        if (tip_y >= 0 && tip_y < SCREEN_H) {
+            fb_pixel(tip_x,     tip_y,     black);
+            fb_pixel(tip_x - 1, tip_y + 1, black);
+            fb_pixel(tip_x + 1, tip_y + 1, black);
+        }
+    }
+}
+
+static void draw_talons_swoop(uint32_t now)
+{
+    if (s_talon_swoop_ms == 0) return;
+    uint32_t elapsed = now - s_talon_swoop_ms;
+    if (elapsed >= TALON_SWOOP_MS) { s_talon_swoop_ms = 0; return; }
+
+    // The "off-screen" position anchors trunk top at SCREEN_H (nothing
+    // visible). Fully deployed puts trunk top at SCREEN_H - (TRUNK_H
+    // + CLAW_H + 8) so claws are ~mid-lower-panel.
+    const int off_y_top = SCREEN_H;
+    const int on_y_top  = SCREEN_H - (TALON_TRUNK_H + TALON_CLAW_H + 12);
+    int y_top;
+    float grip = 0.0f;
+    if (elapsed < TALON_RISE_MS) {
+        // Rise: ease-out from off to on.
+        float t = (float)elapsed / (float)TALON_RISE_MS;
+        // Simple quadratic ease-out (1 - (1-t)^2).
+        float e = 1.0f - (1.0f - t) * (1.0f - t);
+        y_top = off_y_top + (int)((on_y_top - off_y_top) * e);
+        grip = t * 0.2f;
+    } else if (elapsed < TALON_SWOOP_MS - TALON_RETRACT_MS) {
+        // Hold: fully deployed; grip curls toward peak.
+        float t = (float)(elapsed - TALON_RISE_MS)
+                / (float)(TALON_SWOOP_MS - TALON_RISE_MS - TALON_RETRACT_MS);
+        y_top = on_y_top;
+        grip = 0.2f + 0.6f * t;
+    } else {
+        // Retract: linear back to off.
+        float t = (float)(elapsed - (TALON_SWOOP_MS - TALON_RETRACT_MS))
+                / (float)TALON_RETRACT_MS;
+        y_top = on_y_top + (int)((off_y_top - on_y_top) * t);
+        grip = 0.8f - 0.8f * t;
+    }
+
+    // Two feet: left at 1/3, right at 2/3. Terry's screenshot has them
+    // roughly at those thirds.
+    int lx = SCREEN_W / 3;
+    int rx = SCREEN_W - SCREEN_W / 3;
+    draw_one_foot(lx, y_top, grip);
+    draw_one_foot(rx, y_top, grip);
+}
+
+// -----------------------------------------------------------------------
 // HUD -- Terry's GrPrint calls at the top of BSPEagleDive:
 //   "�1:%5.1f �:%5.1f �2:%5.1f Strip:%5d"
 //   "x:%5.1f y:%5.1f z:%5.1f height:%3d score:%d high:%d"
@@ -548,7 +669,7 @@ static void RenderHUD(void)
     snprintf(buf, sizeof(buf), "score:%d  best:%d", game_score, best_score);
     fb_puts(0, SCREEN_H - 16, buf, C(C_WHITE), C(C_BLACK));
     fb_puts(0, SCREEN_H - 8,
-            "ARROWS FLY  A RESTART  BOOT EXIT",
+            "ARROWS FLY  A RESTART  B TALONS  BOOT",
             C(C_LTGRAY), C(C_BLACK));
 
     // Crosshair -- Terry: GrLine3(cx+/-5, cy, ...)
@@ -559,66 +680,13 @@ static void RenderHUD(void)
     fb_vline(cx, cy - 5, 4, xh);
     fb_vline(cx, cy + 2, 4, xh);
 
-    // Eagle talons overlay — homage (not from Terry's eagledive.cpp.z).
-    // The user recalls Terry's on-monitor rendering had prominent talons
-    // strobing at the top of the view, giving the eagle's POV; his
-    // source doesn't actually draw them, but the visual is iconic to
-    // the game. Composed here as brown legs + yellow claws framing the
-    // top corners, flashed intermittently (~500 ms every ~2.5 s) so the
-    // clean flight view stays readable.
-    uint32_t now_talons = shrine_ms();
-    uint32_t cycle = now_talons % 2500;
-    if (cycle < 500) {
-        // Alpha-ish emphasis: outline pass (BLACK) + fill pass (BROWN),
-        // then LTYELLOW claw tips.
-        uint16_t brown  = C(C_BROWN);
-        uint16_t claw   = C(C_YELLOW);
-        uint16_t outline= C(C_BLACK);
-
-        // Left talon leg — a fat brown wedge from the top-left corner
-        // sweeping down/right, ending in three claws pointing inward.
-        for (int r = 0; r < 40; r++) {
-            int w = 34 - r * 3 / 4;
-            if (w < 8) w = 8;
-            fb_hline(0, r, w, brown);
-            fb_pixel(w, r, outline);
-        }
-        // Left claws: 3 tapered wedges at (5,40)..(30,55)
-        int lcx[3] = { 8, 18, 28 };
-        for (int i = 0; i < 3; i++) {
-            int base_x = lcx[i];
-            for (int r = 0; r < 14; r++) {
-                int half = 5 - r / 3;
-                if (half < 1) half = 1;
-                fb_hline(base_x - half, 40 + r, half * 2, brown);
-            }
-            // Tip claw (bright yellow) + black outline underneath.
-            fb_hline(base_x - 1, 53, 3, claw);
-            fb_pixel(base_x - 2, 52, outline);
-            fb_pixel(base_x + 2, 52, outline);
-            fb_pixel(base_x, 55, outline);
-        }
-        // Right talon leg — mirrored.
-        for (int r = 0; r < 40; r++) {
-            int w = 34 - r * 3 / 4;
-            if (w < 8) w = 8;
-            fb_hline(SCREEN_W - w, r, w, brown);
-            fb_pixel(SCREEN_W - w - 1, r, outline);
-        }
-        int rcx[3] = { SCREEN_W - 9, SCREEN_W - 19, SCREEN_W - 29 };
-        for (int i = 0; i < 3; i++) {
-            int base_x = rcx[i];
-            for (int r = 0; r < 14; r++) {
-                int half = 5 - r / 3;
-                if (half < 1) half = 1;
-                fb_hline(base_x - half, 40 + r, half * 2, brown);
-            }
-            fb_hline(base_x - 1, 53, 3, claw);
-            fb_pixel(base_x - 2, 52, outline);
-            fb_pixel(base_x + 2, 52, outline);
-            fb_pixel(base_x, 55, outline);
-        }
-    }
+    // Eagle talons swoop — homage matching Terry's on-monitor
+    // rendering (see reference screenshot): two big yellow eagle feet
+    // rising into frame from the bottom, holding through a grab motion,
+    // then dropping back off-screen. Triggered at game start (in
+    // Init_EagleDive) and on demand via B. Not always-on so the flight
+    // view stays clean between swoops.
+    draw_talons_swoop(shrine_ms());
 
     // Terry's "Catch Fish" flashes for the first 5 seconds
     uint32_t now = shrine_ms();
@@ -759,6 +827,10 @@ static void Init_EagleDive(void)
     cam_z = (int64_t)64                * COORDINATE_SCALE * MAP_SCALE;
 
     game_t0_ms = shrine_ms();
+    // Kick off the opening talon swoop so the player immediately reads
+    // "you're a bird" — matches Terry's rendering where the talons come
+    // in early. Player can re-trigger with B at any time.
+    s_talon_swoop_ms = game_t0_ms;
 }
 
 // -----------------------------------------------------------------------
@@ -806,6 +878,14 @@ void game_talons_run(void)
             Init_EagleDive();
             last = shrine_ms();
             continue;
+        }
+
+        // B swoops the talons in — homage cue that this is a first-
+        // person eagle POV, not a plane. Ignored if a swoop is already
+        // playing so the animation doesn't stutter.
+        if (shrine_key_pressed(BTN_B) && s_talon_swoop_ms == 0) {
+            s_talon_swoop_ms = shrine_ms();
+            shrine_beep(900, 40);
         }
 
         // Terry's AnimateTask advances every ANIMATE_MS=10.
