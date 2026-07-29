@@ -2562,16 +2562,22 @@ static void trailer_paint_backdrop(uint32_t now)
             SPRITE_AESPLASH_BI_1, SPRITE_AESPLASH_BI_1_SIZE);
 }
 
-// Terry's TMsg — 16 Terry-px tall bordered box, blinking red/black
-// outline, yellow text centered, exit early on any button.
+// Terry's TMsg — bordered box, blinking red/black outline, yellow text.
+//
+// Terry's own box was 16 Terry-px tall (native 8x8 font). Our GrPrint
+// draws each glyph at 8 FB pixels regardless of scale, so at gr_dc.scale=2
+// the text is effectively 16 Terry-px tall — same size as Terry's box.
+// A 16-tall glyph in a 16-tall box overhangs by 4 Terry-px (glyph is
+// bottom-anchored at y+8 fb = y+16 Terry, box top-anchored). Result:
+// the sprite/menu behind the box shows through the overhang. Extend the
+// box to 24 Terry-tall so it fully contains our double-height glyphs.
 static void trailer_paint_msg(const char *msg, uint32_t now)
 {
-    // Border box at Terry (0, 456, 640, 16) — Terry: GR_HEIGHT-FONT*3=456.
     bool blink = ((now / 100) & 1);
     gr_dc.color = blink ? C_LTRED : C_BLACK;
-    GrFillRect(&gr_dc, 0, 456, 640, 16);
+    GrFillRect(&gr_dc, 0, 456, 640, 24);
     gr_dc.color = C_BLACK;
-    GrFillRect(&gr_dc, 4, 458, 632, 12);
+    GrFillRect(&gr_dc, 4, 458, 632, 20);
     // Yellow text centered — glyph is 8 fb = 16 Terry pixels wide.
     int nlen = 0; while (msg[nlen]) nlen++;
     int text_x = (640 - nlen * 16) / 2;

@@ -328,22 +328,29 @@ static void SpawnFish(void)
 // -----------------------------------------------------------------------
 static uint16_t PanelColorAt(int l, uint16_t rn)
 {
-    // Terry's monitor rendered the terrain as a ridiculous combination
-    // of two green tones (his palette's GREEN + LTGREEN, plus BLUE for
-    // water) with barely-there hill contrast. On badge that read as a
-    // flat green wash. Push the four bands further apart on the same
-    // green axis so hills actually pop:
+    // Terry's monitor rendered terrain as a ridiculous combination of
+    // two green tones with a checker-like mix that read as depth. We
+    // reproduce that by stippling LTGREEN and GREEN with a probability
+    // weighted by elevation: low ground biases toward LTGREEN (bright
+    // grass), hilltops toward GREEN (dark hill), and mid-slopes end up
+    // as an even two-tone checker. The per-cell hash (rn) is stable per
+    // grid cell so the pattern doesn't shimmer between frames.
     //   water     BLUE
-    //   grass     LTGREEN (bright, saturated)
-    //   foothills GREEN   (darker, more muted)
-    //   peaks     LTCYAN  (near-white highlight — his snow band)
-    // Per-cell hash (rn) is ignored — variation was making adjacent
-    // cells checkerboard.
-    (void)rn;
-    if (l <= WATER_ELEVATION * MAP_SCALE)   return C(C_BLUE);
-    if (l <  ROCK_ELEVATION  * MAP_SCALE)   return C(C_LTGREEN);
-    if (l <  SNOW_ELEVATION  * MAP_SCALE)   return C(C_GREEN);
-    return C(C_LTCYAN);
+    //   grass/hill stipple(LTGREEN, GREEN) with p(GREEN) rising with elev
+    //   peaks     LTCYAN
+    if (l <= WATER_ELEVATION * MAP_SCALE) return C(C_BLUE);
+    if (l >= SNOW_ELEVATION  * MAP_SCALE) return C(C_LTCYAN);
+
+    int lo   = WATER_ELEVATION * MAP_SCALE;
+    int hi   = SNOW_ELEVATION  * MAP_SCALE;
+    int rel  = l - lo;
+    int span = hi - lo;
+    // Threshold in 0..65535. rn < threshold => GREEN, else LTGREEN.
+    // At water level rel=0 => threshold=0 => always LTGREEN. Near snow
+    // rel=span => threshold=65535 => almost always GREEN. Middle
+    // elevations = 50/50 checker between the two.
+    uint32_t threshold = (uint32_t)rel * 65535u / (uint32_t)span;
+    return (rn < threshold) ? C(C_GREEN) : C(C_LTGREEN);
 }
 
 // A small deterministic hash used in place of Terry's per-Panel Rand
