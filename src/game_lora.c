@@ -179,25 +179,28 @@ static uint32_t s_rx_flash_until;
 static uint32_t s_rx_flash_from;
 static char     s_rx_flash_preview[64];
 
-// A four-note ascending triumphant horn — G4 C5 E5 (major triad) then
-// a held G5 on top. Feels like a "you got mail!" trumpet call.
+// The badge piezo is a MOSFET-driven part with resonance around 4 kHz
+// (per hw.h). Anything below ~1.5 kHz barely rings out; the sweet
+// spot is 2..4 kHz. Both fanfares live in that band so they're
+// actually audible instead of a muffled buzz.
+
+// RX fanfare — four-note ascending C major arpeggio in the piezo's
+// hot band. C7 E7 G7 C8. Reads as a "you got mail!" trumpet call.
 static void play_message_fanfare(void)
 {
-    shrine_beep(392,  90);   // G4
-    shrine_beep(523,  90);   // C5
-    shrine_beep(659, 120);   // E5
-    shrine_beep(784, 220);   // G5 (held)
+    shrine_beep(2093,  90);   // C7
+    shrine_beep(2637,  90);   // E7
+    shrine_beep(3136, 120);   // G7
+    shrine_beep(4186, 220);   // C8 (held, right at piezo resonance)
 }
 
-// Send fanfare — deliberately distinct from the RX horn so the user
-// can tell TX vs RX by ear. Short-short-long descending pattern
-// (E5 C5 G4) — reads as "message outbound." Total ~360 ms so it
-// doesn't hold up the UI thread appreciably.
+// TX fanfare — short-short-long DESCENDING pattern so it's audibly
+// distinct from the RX call. G7 E7 C7. Reads as "message outbound."
 static void play_send_fanfare(void)
 {
-    shrine_beep(659,  80);   // E5
-    shrine_beep(523,  80);   // C5
-    shrine_beep(392, 200);   // G4 (held)
+    shrine_beep(3136,  80);   // G7
+    shrine_beep(2637,  80);   // E7
+    shrine_beep(2093, 200);   // C7 (held)
 }
 
 static void trigger_rx_flash(uint32_t from, const char *text)
@@ -632,7 +635,14 @@ void game_lora_run(void)
                              "[R%d %08lx] %.140s",
                              rssi, (unsigned long)from, text);
                     inbox_push(line);
-                    trigger_rx_flash(from, text);
+                    // Skip the popup + fanfare when the "received"
+                    // message is actually our own transmission looped
+                    // back via a mesh rebroadcast — no need to alert
+                    // the user about their own send. Still lands in
+                    // inbox history for audit.
+                    if (from != meshtastic_my_node_id()) {
+                        trigger_rx_flash(from, text);
+                    }
                 }
                 if (header_ok) {
                     scan_note_packet(hdr_from, hdr_chan, rssi, text_ok);
