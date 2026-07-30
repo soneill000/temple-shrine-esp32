@@ -33,9 +33,10 @@ Source: `src/terry_quotes.h`. Rebuilt clean — every entry has a
 verifiable source (Terry's own TempleOS docs, Wikiquote, or user-
 supplied vlog notes). No composed / ~Terry-style entries anymore.
 
-### Pinned first
+### Pinned first (split from the original single quote for LoRa reliability)
 
-- [ ] "What's reality? I don't know. When my bird was looking at my computer monitor I thought, 'That bird has no idea what he's looking at.'" — *Terry, vlog*
+- [ ] "What's reality? I don't know." — *Terry, vlog*
+- [ ] "My bird looked at the monitor. That bird has no idea what he's looking at." — *Terry, vlog*
 
 ### User-supplied verbatim
 

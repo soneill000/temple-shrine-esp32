@@ -184,14 +184,38 @@ static char     s_rx_flash_preview[64];
 // spot is 2..4 kHz. Both fanfares live in that band so they're
 // actually audible instead of a muffled buzz.
 
-// RX fanfare — four-note ascending C major arpeggio in the piezo's
-// hot band. C7 E7 G7 C8. Reads as a "you got mail!" trumpet call.
+// RX fanfare — proper trumpet arrival. Four sections:
+//   1. Ascending major triad up to the octave      (~340 ms)
+//   2. Fast trill on top for the "slightly annoying" ta-da-ta-da
+//      insistence you want when a message drops     (~400 ms)
+//   3. Downward flourish through the arpeggio       (~240 ms)
+//   4. Triumphant landing G7 -> C8 with the top
+//      note HELD at the piezo's resonant peak       (~600 ms)
+// Total ~1.6 s. Loud enough to reach across a room; long enough that
+// there's no way you miss it.
 static void play_message_fanfare(void)
 {
-    shrine_beep(2093,  90);   // C7
-    shrine_beep(2637,  90);   // E7
-    shrine_beep(3136, 120);   // G7
-    shrine_beep(4186, 220);   // C8 (held, right at piezo resonance)
+    // 1. Ascending major triad
+    shrine_beep(2093,  80);   // C7
+    shrine_beep(2637,  80);   // E7
+    shrine_beep(3136,  80);   // G7
+    shrine_beep(4186, 100);   // C8
+
+    // 2. Trill on top — this is the "annoying" part
+    shrine_beep(4186,  60);   // C8
+    shrine_beep(3951,  60);   // B7
+    shrine_beep(4186,  60);   // C8
+    shrine_beep(3951,  60);   // B7
+    shrine_beep(4186, 120);   // C8
+
+    // 3. Downward flourish
+    shrine_beep(4186,  80);   // C8
+    shrine_beep(3136,  80);   // G7
+    shrine_beep(2637,  80);   // E7
+
+    // 4. Triumphant landing (G7 pickup then held C8)
+    shrine_beep(3136, 100);   // G7
+    shrine_beep(4186, 500);   // C8 (held, right at piezo resonance)
 }
 
 // TX fanfare — short-short-long DESCENDING pattern so it's audibly
@@ -333,9 +357,12 @@ static void compose_clear(void)
 
 static void compose_reroll(void)
 {
-    // 4..8 words per sequence — enough for a saying, short enough to
-    // stay readable on the panel.
-    int n_words = 4 + (int)shrine_god(5);
+    // 3..6 words per sequence — short enough that a long-tail set of
+    // long GodWords (RIGHTEOUSNESS, FRANKINCENSE, etc.) still fits
+    // well under Meshtastic's ~200-byte text limit even after the
+    // "GOD SAYS: " prefix. Previously 4..8 which occasionally hit
+    // frame-size sensitivity on LoRa.
+    int n_words = 3 + (int)shrine_god(4);
     strncpy(s_compose, COMPOSE_PREFIX, COMPOSE_MAX - 1);
     s_compose[COMPOSE_MAX - 1] = 0;
     for (int i = 0; i < n_words; i++) {

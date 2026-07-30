@@ -12,8 +12,12 @@ typedef struct {
 } terry_quote_t;
 
 static const terry_quote_t TERRY_QUOTES[] = {
-    // Bird-and-monitor quote pinned first per user request.
-    { "What's reality? I don't know. When my bird was looking at my computer monitor I thought, 'That bird has no idea what he's looking at.'",
+    // Bird-and-monitor quote — split into two shorter entries so each
+    // sends reliably over LoRa (the full 134-char original was close
+    // to Meshtastic's practical text limit and hitting packet loss).
+    // Both halves stand on their own.
+    { "What's reality? I don't know.",              "Terry, vlog" },
+    { "My bird looked at the monitor. That bird has no idea what he's looking at.",
                                                      "Terry, vlog" },
 
     // --- User-supplied verbatim ---
