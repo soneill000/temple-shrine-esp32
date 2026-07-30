@@ -170,6 +170,73 @@ static void inbox_push(const char *text)
     else s_inbox_head = (s_inbox_head + 1) % INBOX_MAX;
 }
 
+// ---- RX message flash + fanfare ----
+// A small on-screen popup + horn fanfare when a new text arrives so
+// the user notices even if they're in COMPOSE/BROWSE/SCAN rather than
+// staring at INBOX.
+#define RX_FLASH_MS 1800u
+static uint32_t s_rx_flash_until;
+static uint32_t s_rx_flash_from;
+static char     s_rx_flash_preview[64];
+
+// A four-note ascending triumphant horn — G4 C5 E5 (major triad) then
+// a held G5 on top. Feels like a "you got mail!" trumpet call.
+static void play_message_fanfare(void)
+{
+    shrine_beep(392,  90);   // G4
+    shrine_beep(523,  90);   // C5
+    shrine_beep(659, 120);   // E5
+    shrine_beep(784, 220);   // G5 (held)
+}
+
+static void trigger_rx_flash(uint32_t from, const char *text)
+{
+    s_rx_flash_until = shrine_ms() + RX_FLASH_MS;
+    s_rx_flash_from  = from;
+    // Preview = first ~40 chars of the text so the popup is readable
+    // even for long messages.
+    strncpy(s_rx_flash_preview, text ? text : "",
+            sizeof(s_rx_flash_preview) - 1);
+    s_rx_flash_preview[sizeof(s_rx_flash_preview) - 1] = 0;
+    play_message_fanfare();
+}
+
+// Draw the "message received" popup overlay on top of whatever mode is
+// currently rendered. No-op if the flash window has expired. Called
+// after each mode's own render so the popup floats above.
+static void draw_rx_flash_if_active(void)
+{
+    if (!s_rx_flash_until) return;
+    uint32_t now = shrine_ms();
+    if (now >= s_rx_flash_until) { s_rx_flash_until = 0; return; }
+
+    // Centered box, 6 rows tall x 34 cols wide.
+    const int box_rows = 6;
+    const int box_cols = 34;
+    int px = (SCREEN_W - box_cols * GLYPH_W) / 2;
+    int py = (SCREEN_H - box_rows * GLYPH_H) / 2;
+    // Border color blinks between LTGREEN and YELLOW so it draws the
+    // eye without being annoying.
+    color_t border = ((now / 150) & 1) ? C_LTGREEN : C_YELLOW;
+    // Solid background.
+    fb_fill_rect(px - 4, py - 4,
+                 box_cols * GLYPH_W + 8, box_rows * GLYPH_H + 8, border);
+    fb_fill_rect(px - 2, py - 2,
+                 box_cols * GLYPH_W + 4, box_rows * GLYPH_H + 4, C_BG);
+    // Header
+    fb_puts((px / GLYPH_W) + 1, (py / GLYPH_H),
+            "*  MESSAGE RECEIVED  *", C_LTGREEN, C_BG);
+    // From
+    char fromb[24];
+    snprintf(fromb, sizeof(fromb), "from %08lx", (unsigned long)s_rx_flash_from);
+    fb_puts((px / GLYPH_W) + 1, (py / GLYPH_H) + 2,
+            fromb, C_LTCYAN, C_BG);
+    // Preview (single line, truncated).
+    fb_puts((px / GLYPH_W) + 1, (py / GLYPH_H) + 4,
+            s_rx_flash_preview, C_WHITE, C_BG);
+    display_present_full(s_fb);
+}
+
 // ---- UI modes ----
 // UI_COMPOSE: sequence GodWords into a phrase, send when ready (first
 //             option in the scene; matches user request).
@@ -554,7 +621,7 @@ void game_lora_run(void)
                              "[R%d %08lx] %.140s",
                              rssi, (unsigned long)from, text);
                     inbox_push(line);
-                    shrine_beep(1800, 40);
+                    trigger_rx_flash(from, text);
                 }
                 if (header_ok) {
                     scan_note_packet(hdr_from, hdr_chan, rssi, text_ok);
@@ -720,6 +787,23 @@ void game_lora_run(void)
             }
             break;
         }
+        }
+
+        // Repaint the RX flash overlay each tick while it's active so
+        // the blinking border animates. draw_rx_flash_if_active
+        // internally checks the expiry timestamp — this is a cheap
+        // no-op most of the time.
+        if (s_rx_flash_until) {
+            // Force a fresh mode render underneath, then draw the flash
+            // on top, so exiting the popup restores the panel cleanly.
+            switch (mode) {
+                case UI_COMPOSE: render_compose(radio_ok); break;
+                case UI_PICK:    render_pick(cur, radio_ok, msg_n); break;
+                case UI_INBOX:   render_inbox(inbox_scroll); break;
+                case UI_SCAN:    render_scan(); break;
+                default: break;
+            }
+            draw_rx_flash_if_active();
         }
 
         shrine_sleep_ms(30);
