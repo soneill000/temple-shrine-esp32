@@ -189,6 +189,17 @@ static void play_message_fanfare(void)
     shrine_beep(784, 220);   // G5 (held)
 }
 
+// Send fanfare — deliberately distinct from the RX horn so the user
+// can tell TX vs RX by ear. Short-short-long descending pattern
+// (E5 C5 G4) — reads as "message outbound." Total ~360 ms so it
+// doesn't hold up the UI thread appreciably.
+static void play_send_fanfare(void)
+{
+    shrine_beep(659,  80);   // E5
+    shrine_beep(523,  80);   // C5
+    shrine_beep(392, 200);   // G4 (held)
+}
+
 static void trigger_rx_flash(uint32_t from, const char *text)
 {
     s_rx_flash_until = shrine_ms() + RX_FLASH_MS;
@@ -380,7 +391,7 @@ static void render_compose(bool radio_ok)
     fb_puts(TEXT_COLS - 10, 20, rxb, C_LTMAGENTA, C_BG);
 
     fb_puts_centered(TEXT_ROWS - 1,
-                     " A REROLL  B SEND  DN CLEAR  UP BROWSE ",
+                     " A REROLL  B SEND  DN CLEAR   LR TAB ",
                      C_BG, C_YELLOW);
     display_present_full(s_fb);
 }
@@ -427,7 +438,7 @@ static void render_pick(int cur, bool radio_ok, int msg_count)
     fb_puts(TEXT_COLS - 10, 20, rxb, C_LTMAGENTA, C_BG);
 
     fb_puts_centered(TEXT_ROWS - 1,
-                     " LR BROWSE  A SEND  B INBOX  UP COMPOSE ",
+                     " UD PICK  A SEND   LR TAB ",
                      C_BG, C_YELLOW);
     display_present_full(s_fb);
 }
@@ -473,7 +484,7 @@ static void render_inbox(int scroll_top)
         }
     }
     fb_puts_centered(TEXT_ROWS - 1,
-                     " UD SCROLL  B BROADCAST  A EXIT ",
+                     " UD SCROLL   LR TAB   BOOT EXIT ",
                      C_BG, C_YELLOW);
     display_present_full(s_fb);
 }
@@ -559,7 +570,7 @@ static void render_scan(void)
     fb_puts(2, 21, meta, C_DKGRAY, C_BG);
 
     fb_puts_centered(TEXT_ROWS - 1,
-                     " A CLEAR  L ANNOUNCE  B BACK  BOOT EXIT ",
+                     " A CLEAR  B ANNOUNCE   LR TAB   BOOT EXIT ",
                      C_BG, C_YELLOW);
     display_present_full(s_fb);
 }
@@ -642,8 +653,35 @@ void game_lora_run(void)
 
         bool need_repaint = false;
 
+        // Global tab cycle: LEFT/RIGHT walks the fixed sequence
+        // COMPOSE -> PICK -> INBOX -> SCAN -> COMPOSE, skipping the
+        // out-of-band PREVIEW mode. Consistent everywhere so the
+        // player doesn't have to memorise which mode is reachable from
+        // which other mode.
+        static const ui_mode_t TAB_ORDER[4] = {
+            UI_COMPOSE, UI_PICK, UI_INBOX, UI_SCAN
+        };
+        if (mode != UI_PREVIEW &&
+            (shrine_key_pressed(BTN_LEFT) || shrine_key_pressed(BTN_RIGHT))) {
+            int idx = 0;
+            for (int i = 0; i < 4; i++) if (TAB_ORDER[i] == mode) { idx = i; break; }
+            int delta = shrine_key_pressed(BTN_RIGHT) ? 1 : 3;
+            ui_mode_t next = TAB_ORDER[(idx + delta) % 4];
+            mode = next;
+            shrine_beep(1400, 20);
+            switch (next) {
+                case UI_COMPOSE: render_compose(radio_ok); break;
+                case UI_PICK:    render_pick(cur, radio_ok, msg_n); break;
+                case UI_INBOX:   render_inbox(inbox_scroll); break;
+                case UI_SCAN:    render_scan(); break;
+                default: break;
+            }
+            continue;
+        }
+
         switch (mode) {
         case UI_COMPOSE:
+            // A reroll, B send, DOWN clear. UP unused.
             if (shrine_key_pressed(BTN_A)) {
                 compose_reroll();
                 shrine_beep(1800, 20);
@@ -654,12 +692,6 @@ void game_lora_run(void)
                 shrine_beep(600, 30);
                 need_repaint = true;
             }
-            if (shrine_key_pressed(BTN_UP)) {
-                mode = UI_PICK;
-                shrine_beep(1400, 20);
-                render_pick(cur, radio_ok, msg_n);
-                continue;
-            }
             if (shrine_key_pressed(BTN_B)) {
                 // Send the composed phrase (skip if user cleared).
                 if (s_compose[0] == 0) {
@@ -668,7 +700,7 @@ void game_lora_run(void)
                 }
                 char tx_status[48];
                 render_preview(s_compose, "sending...", false, false);
-                shrine_beep(2200, 60);
+                play_send_fanfare();
                 bool ok = send_meshtastic_text(s_compose,
                                                tx_status, sizeof(tx_status));
                 render_preview(s_compose, tx_status, true, ok);
@@ -680,12 +712,14 @@ void game_lora_run(void)
             break;
 
         case UI_PICK:
-            if (shrine_key_pressed(BTN_LEFT)) {
+            // UP/DOWN cycles quotes (used to be LEFT/RIGHT before the
+            // tab-cycle rework). A sends. B unused.
+            if (shrine_key_pressed(BTN_UP)) {
                 cur = (cur - 1 + msg_n) % msg_n;
                 shrine_beep(1200, 15);
                 need_repaint = true;
             }
-            if (shrine_key_pressed(BTN_RIGHT)) {
+            if (shrine_key_pressed(BTN_DOWN)) {
                 cur = (cur + 1) % msg_n;
                 shrine_beep(1200, 15);
                 need_repaint = true;
@@ -694,31 +728,12 @@ void game_lora_run(void)
                 const char *body = TERRY_QUOTES[cur].text;
                 char tx_status[48];
                 render_preview(body, "sending...", false, false);
-                shrine_beep(2200, 60);
+                play_send_fanfare();
                 bool ok = send_meshtastic_text(body,
                                                tx_status, sizeof(tx_status));
                 render_preview(body, tx_status, true, ok);
                 mode = UI_PREVIEW;
                 preview_return = UI_PICK;
-                continue;
-            }
-            if (shrine_key_pressed(BTN_B)) {
-                mode = UI_INBOX;
-                inbox_scroll = 0;
-                shrine_beep(1400, 20);
-                render_inbox(inbox_scroll);
-                continue;
-            }
-            if (shrine_key_pressed(BTN_UP)) {
-                mode = UI_COMPOSE;
-                shrine_beep(1400, 20);
-                render_compose(radio_ok);
-                continue;
-            }
-            if (shrine_key_pressed(BTN_DOWN)) {
-                mode = UI_SCAN;
-                shrine_beep(1400, 20);
-                render_scan();
                 continue;
             }
             if (need_repaint) render_pick(cur, radio_ok, msg_n);
@@ -733,6 +748,7 @@ void game_lora_run(void)
             break;
 
         case UI_INBOX:
+            // UP/DOWN scroll. A/B unused (BOOT still exits scene).
             if (shrine_key_pressed(BTN_UP) && inbox_scroll > 0) {
                 inbox_scroll--;
                 render_inbox(inbox_scroll);
@@ -742,16 +758,13 @@ void game_lora_run(void)
                 inbox_scroll++;
                 render_inbox(inbox_scroll);
             }
-            if (shrine_key_pressed(BTN_A)) return;
-            if (shrine_key_pressed(BTN_B)) {
-                mode = UI_PICK;
-                render_pick(cur, radio_ok, msg_n);
-            }
             break;
 
         case UI_SCAN: {
+            // A clears the table + counters. B re-announces our
+            // NodeInfo (moved from LEFT — LEFT/RIGHT are the global
+            // tab cycle now).
             if (shrine_key_pressed(BTN_A)) {
-                // Clear the table + counters.
                 memset(s_nodes, 0, sizeof(s_nodes));
                 s_node_count = 0;
                 s_raw_packets = 0;
@@ -760,8 +773,7 @@ void game_lora_run(void)
                 render_scan();
                 continue;
             }
-            if (shrine_key_pressed(BTN_LEFT)) {
-                // Manual re-announce — sends our NodeInfo to the mesh.
+            if (shrine_key_pressed(BTN_B)) {
                 if (send_meshtastic_nodeinfo()) {
                     last_nodeinfo_ms = shrine_ms();
                     shrine_beep(1800, 60);
@@ -769,12 +781,6 @@ void game_lora_run(void)
                     shrine_beep(300, 60);
                 }
                 render_scan();
-                continue;
-            }
-            if (shrine_key_pressed(BTN_B)) {
-                mode = UI_PICK;
-                shrine_beep(1400, 20);
-                render_pick(cur, radio_ok, msg_n);
                 continue;
             }
             // Repaint ~2x/sec so ages tick and new packets show up
