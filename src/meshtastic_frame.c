@@ -346,19 +346,31 @@ static bool decode_data_text(const uint8_t *in, size_t in_len,
 }
 
 // ---- AES-CTR nonce ----
+// Layout matches Meshtastic firmware's CryptoEngine::initNonce exactly:
+//
+//   bytes  0..7   packet_id as uint64_t little-endian
+//                 (upper 4 bytes are always 0 — the header id is 32-bit
+//                  but the crypto layer widens it to uint64_t)
+//   bytes  8..11  from_node as uint32_t little-endian
+//   bytes 12..15  block counter (starts at 0, big-endian increment)
+//
+// Getting from_node's byte position wrong (used to be at 4..7 here)
+// means our AES-CTR keystream doesn't match what other Meshtastic
+// devices generate for the same (packet_id, from_node) pair. Every
+// transmitted packet looked like noise to them, and vice versa.
 static void make_nonce(uint32_t packet_id, uint32_t from_node, uint8_t nonce[16])
 {
     memset(nonce, 0, 16);
-    // Meshtastic radio nonce: packet_id LE then from_node LE, rest zero.
-    // The AES-CTR block counter increments the tail-8 bytes.
+    // packet_id as uint64_t LE — bytes 0..3 = low 32, bytes 4..7 = 0
     nonce[0] = (uint8_t)(packet_id);
     nonce[1] = (uint8_t)(packet_id >> 8);
     nonce[2] = (uint8_t)(packet_id >> 16);
     nonce[3] = (uint8_t)(packet_id >> 24);
-    nonce[4] = (uint8_t)(from_node);
-    nonce[5] = (uint8_t)(from_node >> 8);
-    nonce[6] = (uint8_t)(from_node >> 16);
-    nonce[7] = (uint8_t)(from_node >> 24);
+    // from_node as uint32_t LE at offset 8
+    nonce[8]  = (uint8_t)(from_node);
+    nonce[9]  = (uint8_t)(from_node >> 8);
+    nonce[10] = (uint8_t)(from_node >> 16);
+    nonce[11] = (uint8_t)(from_node >> 24);
 }
 
 // AES-128-CTR: encrypt/decrypt in-place. `nonce` counter is the last 4
