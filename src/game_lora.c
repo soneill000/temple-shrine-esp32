@@ -139,6 +139,22 @@ static bool send_meshtastic_text(const char *text, char *tx_status_out, size_t t
     return ok;
 }
 
+// Broadcast a NODEINFO_APP frame so other Meshtastic devices get a
+// User record for the badge and stop hiding text messages from us as
+// "unknown sender." Called once on scene entry and re-triggerable
+// via a UI key.
+static bool send_meshtastic_nodeinfo(void)
+{
+    uint8_t frame[MESHTASTIC_MAX_FRAME];
+    uint32_t packet_id = shrine_god(0x7fffffff);
+    if (packet_id == 0) packet_id = 1;
+    size_t n = meshtastic_build_nodeinfo("TempleShrine", "TMPL",
+                                         packet_id,
+                                         frame, sizeof(frame));
+    if (n == 0) return false;
+    return lora_radio_send(frame, n);
+}
+
 // ---- Inbox ring buffer ----
 #define INBOX_MAX 16
 static char     s_inbox[INBOX_MAX][160];
@@ -395,6 +411,8 @@ static void render_inbox(int scroll_top)
     display_present_full(s_fb);
 }
 
+static uint32_t s_render_scan_last_ni_ms;   // set by main loop before each render
+
 static void render_scan(void)
 {
     draw_frame(" HOLYMESH  -  SCAN ");
@@ -407,6 +425,18 @@ static void render_scan(void)
              (unsigned long)s_header_ok,
              s_node_count, SCAN_NODES);
     fb_puts(2, 3, stats, C_DKGRAY, C_BG);
+
+    // Show when our next NodeInfo re-announce is due so the user
+    // knows the badge is periodically introducing itself.
+    if (s_render_scan_last_ni_ms) {
+        uint32_t now = shrine_ms();
+        uint32_t since = (now - s_render_scan_last_ni_ms) / 1000;
+        uint32_t until = 120 > since ? 120 - since : 0;
+        char nib[40];
+        snprintf(nib, sizeof(nib), "self-announce in %lus",
+                 (unsigned long)until);
+        fb_puts(TEXT_COLS - 24, 3, nib, C_DKGRAY, C_BG);
+    }
 
     if (s_node_count == 0) {
         fb_puts_centered(11, "listening...", C_LTGRAY, C_BG);
@@ -462,7 +492,7 @@ static void render_scan(void)
     fb_puts(2, 21, meta, C_DKGRAY, C_BG);
 
     fb_puts_centered(TEXT_ROWS - 1,
-                     " A CLEAR  B BACK  BOOT EXIT ",
+                     " A CLEAR  L ANNOUNCE  B BACK  BOOT EXIT ",
                      C_BG, C_YELLOW);
     display_present_full(s_fb);
 }
@@ -482,6 +512,16 @@ void game_lora_run(void)
 
     compose_reroll();
     render_compose(radio_ok);
+
+    // Introduce ourselves to the mesh so text-message receivers have
+    // a User record for the badge (Meshtastic apps hide text messages
+    // from senders they don't know). Fires once on entry and then
+    // every ~120 s while the scene is open — matches how Meshtastic
+    // firmware itself periodically re-broadcasts NodeInfo.
+    uint32_t last_nodeinfo_ms = 0;
+    if (radio_ok && send_meshtastic_nodeinfo()) {
+        last_nodeinfo_ms = shrine_ms();
+    }
 
     while (1) {
         shrine_input_scan();
@@ -521,6 +561,17 @@ void game_lora_run(void)
                 }
             }
         }
+
+        // Periodic NodeInfo re-announce (every 120 s). Matches how
+        // Meshtastic firmware re-broadcasts NodeInfo so nodes that
+        // come online later still learn about us.
+        if (radio_ok) {
+            uint32_t now_ms = shrine_ms();
+            if (now_ms - last_nodeinfo_ms > 120000) {
+                if (send_meshtastic_nodeinfo()) last_nodeinfo_ms = now_ms;
+            }
+        }
+        s_render_scan_last_ni_ms = last_nodeinfo_ms;
 
         bool need_repaint = false;
 
@@ -639,6 +690,17 @@ void game_lora_run(void)
                 s_raw_packets = 0;
                 s_header_ok = 0;
                 shrine_beep(600, 30);
+                render_scan();
+                continue;
+            }
+            if (shrine_key_pressed(BTN_LEFT)) {
+                // Manual re-announce — sends our NodeInfo to the mesh.
+                if (send_meshtastic_nodeinfo()) {
+                    last_nodeinfo_ms = shrine_ms();
+                    shrine_beep(1800, 60);
+                } else {
+                    shrine_beep(300, 60);
+                }
                 render_scan();
                 continue;
             }

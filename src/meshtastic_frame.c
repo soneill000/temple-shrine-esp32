@@ -122,8 +122,13 @@ static const uint8_t DEFAULT_PSK[16] = {
 //   channel_hash        = 0x08
 #define LONGFAST_CHANNEL_HASH 0x08
 
-// PortNum enum value for text messages (Meshtastic PortNum.proto).
+// PortNum enum values (Meshtastic PortNums.proto).
 #define PORTNUM_TEXT_MESSAGE_APP 1
+#define PORTNUM_NODEINFO_APP     4
+
+// HardwareModel enum. PRIVATE_HW = 255 is what non-official boards use
+// when they don't want to claim a specific Meshtastic HW variant.
+#define HW_MODEL_PRIVATE_HW      255
 
 // 16-byte header layout.
 #define HDR_SIZE         16
@@ -187,6 +192,84 @@ static size_t varint_read(const uint8_t *in, size_t len, uint32_t *v)
         shift += 7;
     }
     return 0;
+}
+
+// ---- User protobuf builder ----
+// Fields we set for a self-announce:
+//   1  id         string    "!<8-hex-lower node ID>"
+//   2  long_name  string    e.g. "TempleShrine"
+//   3  short_name string    e.g. "TMPL" (4 chars max)
+//   5  hw_model   enum      PRIVATE_HW = 255
+// All other fields left absent (defaulted).
+static size_t encode_user(const char *long_name,
+                          const char *short_name,
+                          uint32_t node_id,
+                          uint8_t *out, size_t out_max)
+{
+    char id_buf[10];
+    snprintf(id_buf, sizeof(id_buf), "!%08lx", (unsigned long)node_id);
+    size_t id_len = strlen(id_buf);
+
+    size_t ln_len = long_name ? strlen(long_name) : 0;
+    if (ln_len > 39) ln_len = 39;
+    size_t sn_len = short_name ? strlen(short_name) : 0;
+    if (sn_len > 4)  sn_len = 4;
+
+    size_t n = 0;
+    // Field 1: id
+    if (n + 2 + id_len > out_max) return 0;
+    out[n++] = 0x0A;                             // (1<<3)|2 = length-delim
+    out[n++] = (uint8_t)id_len;
+    memcpy(&out[n], id_buf, id_len); n += id_len;
+    // Field 2: long_name
+    if (ln_len > 0) {
+        if (n + 2 + ln_len > out_max) return 0;
+        out[n++] = 0x12;                         // (2<<3)|2
+        out[n++] = (uint8_t)ln_len;
+        memcpy(&out[n], long_name, ln_len); n += ln_len;
+    }
+    // Field 3: short_name
+    if (sn_len > 0) {
+        if (n + 2 + sn_len > out_max) return 0;
+        out[n++] = 0x1A;                         // (3<<3)|2
+        out[n++] = (uint8_t)sn_len;
+        memcpy(&out[n], short_name, sn_len); n += sn_len;
+    }
+    // Field 5: hw_model = 255 (PRIVATE_HW), varint
+    if (n + 3 > out_max) return 0;
+    out[n++] = 0x28;                             // (5<<3)|0 varint
+    out[n++] = 0xFF;                             // 255 as varint: 0xFF 0x01
+    out[n++] = 0x01;
+    return n;
+}
+
+// ---- Data protobuf: {portnum, payload, [want_response]} ----
+// Generalized encoder — used by both text and nodeinfo.
+static size_t encode_data(uint8_t portnum,
+                          const uint8_t *payload, size_t payload_len,
+                          bool want_response,
+                          uint8_t *out, size_t out_max)
+{
+    size_t n = 0;
+    // Field 1 (portnum), varint
+    if (n + 2 > out_max) return 0;
+    out[n++] = 0x08;
+    out[n++] = portnum;
+    // Field 2 (payload), length-delimited
+    if (n + 1 > out_max) return 0;
+    out[n++] = 0x12;
+    if (n + 5 > out_max) return 0;
+    n += varint_write((uint32_t)payload_len, &out[n]);
+    if (n + payload_len > out_max) return 0;
+    memcpy(&out[n], payload, payload_len);
+    n += payload_len;
+    // Field 3 (want_response), varint bool
+    if (want_response) {
+        if (n + 2 > out_max) return 0;
+        out[n++] = 0x18;
+        out[n++] = 0x01;
+    }
+    return n;
 }
 
 // ---- Data protobuf: {portnum=1, payload=text} ----
@@ -304,15 +387,10 @@ static void aes_ctr_apply(const uint8_t *key,
     }
 }
 
-// ---- Public API ----
-size_t meshtastic_build_text(const char *text, uint32_t packet_id,
-                             uint8_t *out, size_t out_max)
+// ---- Header writer (shared) ----
+static void write_broadcast_header(uint8_t *out, uint32_t from, uint32_t packet_id)
 {
-    if (!text || !out || out_max < HDR_SIZE + 8) return 0;
-    uint32_t from = meshtastic_my_node_id();
-    uint32_t to   = MESHTASTIC_BROADCAST;
-
-    // Header
+    uint32_t to = MESHTASTIC_BROADCAST;
     out[HDR_TO_OFF+0]     = (uint8_t)(to);
     out[HDR_TO_OFF+1]     = (uint8_t)(to >> 8);
     out[HDR_TO_OFF+2]     = (uint8_t)(to >> 16);
@@ -329,8 +407,16 @@ size_t meshtastic_build_text(const char *text, uint32_t packet_id,
     out[HDR_CHAN_OFF]     = LONGFAST_CHANNEL_HASH;
     out[HDR_NEXTHOP_OFF]  = 0;
     out[HDR_RELAY_OFF]    = 0;
+}
 
-    // Encode Data protobuf into payload region
+// ---- Public API ----
+size_t meshtastic_build_text(const char *text, uint32_t packet_id,
+                             uint8_t *out, size_t out_max)
+{
+    if (!text || !out || out_max < HDR_SIZE + 8) return 0;
+    uint32_t from = meshtastic_my_node_id();
+    write_broadcast_header(out, from, packet_id);
+
     size_t payload_len = encode_data_text(text,
                                           out + HDR_SIZE,
                                           out_max - HDR_SIZE);
@@ -340,6 +426,37 @@ size_t meshtastic_build_text(const char *text, uint32_t packet_id,
     make_nonce(packet_id, from, nonce);
     aes_ctr_apply(DEFAULT_PSK, nonce, out + HDR_SIZE, payload_len);
     return HDR_SIZE + payload_len;
+}
+
+size_t meshtastic_build_nodeinfo(const char *long_name,
+                                 const char *short_name,
+                                 uint32_t packet_id,
+                                 uint8_t *out, size_t out_max)
+{
+    if (!out || out_max < HDR_SIZE + 32) return 0;
+    uint32_t from = meshtastic_my_node_id();
+
+    write_broadcast_header(out, from, packet_id);
+
+    // Encode User protobuf into a scratch buffer, then wrap it in a
+    // Data { portnum=NODEINFO_APP, payload=<user>, want_response=true }
+    // and land the Data bytes in the outgoing frame.
+    uint8_t user_buf[80];
+    size_t user_len = encode_user(long_name, short_name, from,
+                                  user_buf, sizeof(user_buf));
+    if (user_len == 0) return 0;
+
+    size_t data_len = encode_data(PORTNUM_NODEINFO_APP,
+                                  user_buf, user_len,
+                                  true,   // want_response — solicit others' NodeInfo
+                                  out + HDR_SIZE,
+                                  out_max - HDR_SIZE);
+    if (data_len == 0) return 0;
+
+    uint8_t nonce[16];
+    make_nonce(packet_id, from, nonce);
+    aes_ctr_apply(DEFAULT_PSK, nonce, out + HDR_SIZE, data_len);
+    return HDR_SIZE + data_len;
 }
 
 bool meshtastic_parse_text(const uint8_t *in, size_t in_len,

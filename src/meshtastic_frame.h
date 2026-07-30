@@ -66,3 +66,17 @@ bool meshtastic_parse_header(const uint8_t *in, size_t in_len,
 // Channel hash byte we broadcast under (LongFast default). Callers can
 // use this to tell whether a heard packet is on our channel.
 #define MESHTASTIC_LONGFAST_CHANNEL_HASH 0x08
+
+// Build a NODEINFO_APP announcement frame. Meshtastic apps hide text
+// messages from senders they don't have a User record for, so we need
+// to introduce ourselves once when the scene loads. Contents:
+//   User { id="!<hex>", long_name, short_name, hw_model=255/PRIVATE }
+// wrapped in Data { portnum=NODEINFO_APP=4, payload=<user_bytes>,
+// want_response=true }, wrapped in the standard MeshPacket header,
+// encrypted with the LongFast key.
+// `long_name` and `short_name` are truncated to Meshtastic's field
+// limits (39 / 4 chars respectively). Returns bytes written or 0.
+size_t meshtastic_build_nodeinfo(const char *long_name,
+                                 const char *short_name,
+                                 uint32_t packet_id,
+                                 uint8_t *out, size_t out_max);
