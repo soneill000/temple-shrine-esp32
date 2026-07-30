@@ -1,21 +1,20 @@
 // game_lora.c — "HOLYMESH" LoRa broadcast + receive scene.
-// TempleOS-themed messages over 915 MHz to nearby Meshtastic nodes.
 //
-// PASS 1 (this file): scene UI + content library + LoRa driver hookup
-// on the raw-bytes level. Broadcasts are wrapped in a minimal envelope
-// (magic + type + text) — real Meshtastic packet framing lands in
-// pass 2 (see meshtastic_frame.c, TODO). That means for the moment
-// other TempleShrine badges will receive our messages but the wider
-// Meshtastic network will see them as unrecognized packets on the
-// LongFast channel.
+// Broadcasts TempleOS-themed messages on the Meshtastic US LongFast
+// primary channel (906.875 MHz, SF11 BW250, sync 0x2B). Every outgoing
+// message is packed into a real Meshtastic v2 mesh packet via
+// meshtastic_frame.c — 16-byte header + AES-128-CTR-encrypted Data
+// protobuf (portnum=TEXT_MESSAGE_APP). Meshtastic phones/devices on
+// the same channel will pick these up and render them as text
+// messages. Incoming frames are decrypted and displayed in the inbox
+// if they parse as text on the same channel.
 //
 // UX:
-//   PRAISE HIM (A)    — pick a random Terry-themed message, show it
-//                       one screen, press A again to broadcast.
-//   BROWSE (LR)       — scroll the quote/word library, current entry
-//                       shown in the top pane; A broadcasts it.
-//   INBOX (UD toggle) — swap to the received-messages log.
-//   B                 — cycle sub-modes (broadcast / inbox).
+//   COMPOSE (default) — random 4-8 GodWord sequence; A rerolls, DN
+//                       clears, B broadcasts, UP -> BROWSE.
+//   BROWSE            — curated Terry aphorisms; LEFT/RIGHT scrolls,
+//                       A broadcasts, B -> INBOX, UP -> COMPOSE.
+//   INBOX             — received messages (with sender node IDs).
 //   BOOT              — exit.
 
 #include "games.h"
@@ -27,6 +26,7 @@
 #include "vocab.h"
 #include "terry_quotes.h"
 #include "lora_radio.h"
+#include "meshtastic_frame.h"
 
 #include "scene_fb.h"
 #define s_fb g_scene_fb
@@ -113,14 +113,30 @@ static void fb_wrap_puts(int row_top, int col_left, int cols_w,
 // ---- Content ----
 // Browse/pick mode only lists Terry quotes. GodWord broadcasting lives
 // exclusively in COMPOSE mode (random sequences) so this section stays
-// curated. Wire format v1: "T1|Q|<text>" for quotes, "T1|C|<text>" for
-// composed sequences (set in the send call below), stripped by receivers.
+// curated. All broadcasts go out as real Meshtastic text messages via
+// meshtastic_build_text — the text body is the phrase itself, exactly
+// as any Meshtastic device would send.
 
 static int msg_pool_size(void) { return TERRY_QUOTES_N; }
 
-static void format_wire_quote(int quote_idx, char *out, size_t max)
+// Broadcast a text string as a Meshtastic v2 text message on LongFast.
+// Returns whether the LoRa TX completed. Fills wire_hex_out (optional)
+// with a short preview like "TX 84B #a1b2c3d4" for on-screen display.
+static bool send_meshtastic_text(const char *text, char *tx_status_out, size_t tsz)
 {
-    snprintf(out, max, "T1|Q|%s", TERRY_QUOTES[quote_idx].text);
+    uint8_t frame[MESHTASTIC_MAX_FRAME];
+    uint32_t packet_id = shrine_god(0x7fffffff);
+    if (packet_id == 0) packet_id = 1;
+    size_t n = meshtastic_build_text(text, packet_id, frame, sizeof(frame));
+    if (n == 0) {
+        if (tx_status_out) snprintf(tx_status_out, tsz, "encode failed");
+        return false;
+    }
+    bool ok = lora_radio_send(frame, n);
+    if (tx_status_out)
+        snprintf(tx_status_out, tsz, "%s %uB #%08lx",
+                 ok ? "TX" : "FAIL", (unsigned)n, (unsigned long)packet_id);
+    return ok;
 }
 
 // ---- Inbox ring buffer ----
@@ -215,7 +231,11 @@ static void render_compose(bool radio_ok)
     else          snprintf(statusbuf, sizeof(statusbuf), "RADIO OFF (%s)",
                            lora_radio_status());
     fb_puts(2, 20, statusbuf, radio_ok ? C_LTGREEN : C_LTRED, C_BG);
-    fb_puts(2, 21, "915 MHz  SF11  BW250  LongFast", C_DKGRAY, C_BG);
+    char meta[48];
+    snprintf(meta, sizeof(meta),
+             "915MHz LongFast   ID %08lx",
+             (unsigned long)meshtastic_my_node_id());
+    fb_puts(2, 21, meta, C_DKGRAY, C_BG);
 
     // Received-count preview.
     char rxb[24];
@@ -258,7 +278,11 @@ static void render_pick(int cur, bool radio_ok, int msg_count)
                  lora_radio_status());
     }
     fb_puts(2, 20, statusbuf, radio_ok ? C_LTGREEN : C_LTRED, C_BG);
-    fb_puts(2, 21, "915 MHz  SF11  BW250  LongFast", C_DKGRAY, C_BG);
+    char meta2[48];
+    snprintf(meta2, sizeof(meta2),
+             "915MHz LongFast   ID %08lx",
+             (unsigned long)meshtastic_my_node_id());
+    fb_puts(2, 21, meta2, C_DKGRAY, C_BG);
 
     // Received-count preview.
     char rxb[24];
@@ -329,7 +353,6 @@ void game_lora_run(void)
     ui_mode_t mode    = UI_COMPOSE;    // land on COMPOSE first (user request)
     ui_mode_t preview_return = UI_COMPOSE;   // where to go back to after send
     int      inbox_scroll = 0;
-    char     wire[192];
 
     compose_reroll();
     render_compose(radio_ok);
@@ -338,25 +361,23 @@ void game_lora_run(void)
         shrine_input_scan();
         if (shrine_should_quit()) return;
 
-        // Passive receive — poll every frame.
+        // Passive receive — poll every frame. Decrypt as a Meshtastic
+        // text frame on the LongFast channel; skip anything that isn't.
         {
-            uint8_t buf[160];
+            uint8_t buf[MESHTASTIC_MAX_FRAME];
             int rssi = 0;
-            size_t n = lora_radio_recv(buf, sizeof(buf) - 1, &rssi);
+            size_t n = lora_radio_recv(buf, sizeof(buf), &rssi);
             if (n > 0) {
-                buf[n] = 0;
-                // If prefixed with our magic, strip it for display.
-                char line[192];
-                const char *payload = (const char *)buf;
-                if (n > 5 && buf[0] == 'T' && buf[1] == '1'
-                    && buf[2] == '|') {
-                    payload = (const char *)(buf + 5);
+                char text[180];
+                uint32_t from = 0;
+                if (meshtastic_parse_text(buf, n, text, sizeof(text), &from)) {
+                    char line[220];
+                    snprintf(line, sizeof(line),
+                             "[R%d %08lx] %.140s",
+                             rssi, (unsigned long)from, text);
+                    inbox_push(line);
+                    shrine_beep(1800, 40);
                 }
-                // Cap payload printout at 150 chars so the RSSI prefix
-                // plus text always fits in `line`.
-                snprintf(line, sizeof(line), "[R%d] %.150s", rssi, payload);
-                inbox_push(line);
-                shrine_beep(1800, 40);
             }
         }
 
@@ -386,12 +407,12 @@ void game_lora_run(void)
                     shrine_beep(300, 60);
                     break;
                 }
-                snprintf(wire, sizeof(wire), "T1|C|%s", s_compose);
-                render_preview(s_compose, wire, false, false);
+                char tx_status[48];
+                render_preview(s_compose, "sending...", false, false);
                 shrine_beep(2200, 60);
-                bool ok = lora_radio_send((const uint8_t *)wire,
-                                          strlen(wire));
-                render_preview(s_compose, wire, true, ok);
+                bool ok = send_meshtastic_text(s_compose,
+                                               tx_status, sizeof(tx_status));
+                render_preview(s_compose, tx_status, true, ok);
                 mode = UI_PREVIEW;
                 preview_return = UI_COMPOSE;
                 continue;
@@ -412,12 +433,12 @@ void game_lora_run(void)
             }
             if (shrine_key_pressed(BTN_A)) {
                 const char *body = TERRY_QUOTES[cur].text;
-                format_wire_quote(cur, wire, sizeof(wire));
-                render_preview(body, wire, false, false);
+                char tx_status[48];
+                render_preview(body, "sending...", false, false);
                 shrine_beep(2200, 60);
-                bool ok = lora_radio_send((const uint8_t *)wire,
-                                          strlen(wire));
-                render_preview(body, wire, true, ok);
+                bool ok = send_meshtastic_text(body,
+                                               tx_status, sizeof(tx_status));
+                render_preview(body, tx_status, true, ok);
                 mode = UI_PREVIEW;
                 preview_return = UI_PICK;
                 continue;

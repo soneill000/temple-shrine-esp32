@@ -3,12 +3,17 @@
 Everything the badge can broadcast over LoRa via the HOLYMESH scene, dumped
 here for review.
 
+All broadcasts go out as real Meshtastic v2 text messages on the US
+LongFast primary channel (906.875 MHz, SF11 BW250, AES-128-CTR with the
+default channel PSK). Other Meshtastic devices in range will render the
+badge's phrases in their normal text-message UI.
+
 - **COMPOSE mode** (default screen) — auto-generates a random 4-8 word GodWord
   sequence prefixed with `GOD SAYS:`. A rerolls, DOWN clears, B broadcasts,
-  UP switches to BROWSE. Wire format `T1|C|<text>`.
+  UP switches to BROWSE.
 - **BROWSE mode** — cycles the Terry aphorisms below. A broadcasts the
-  currently-shown quote. Wire format `T1|Q|<text>`.
-- **INBOX mode** — received messages log.
+  currently-shown quote.
+- **INBOX mode** — received Meshtastic text messages log (with source node ID).
 
 To trim: delete the lines you don't want, or mark them for removal, and I'll
 apply the edits back to the source. To add new Terry aphorisms in the same
@@ -22,33 +27,24 @@ Source: `src/terry_quotes.h`. Rebuilt clean — every entry has a
 verifiable source (Terry's own TempleOS docs, Wikiquote, or user-
 supplied vlog notes). No composed / ~Terry-style entries anymore.
 
-### TempleOS design constants (Terry's own docs)
+### Pinned first
 
-- [ ] "An official God temple." — *TempleOS motto*
-- [ ] "The Third Temple." — *TempleOS naming*
-- [ ] "640x480 is God's chosen resolution." — *TempleOS spec*
-- [ ] "16 colors is God's palette." — *TempleOS spec*
-- [ ] "8x8 fonts. God is a monospace typeface." — *TempleOS design*
-- [ ] "One user. One task. One machine." — *TempleOS design*
-- [ ] "Ring 0 forever. Everyone is root." — *TempleOS design*
-
-### Vlog / interview lines (Wikiquote)
-
-- [ ] "An idiot admires complexity, a genius admires simplicity." — *Terry, vlog*
-- [ ] "You banned me from Twitter, God bans you from Heaven." — *Terry, vlog*
-- [ ] "God likes music that makes you feel." — *Terry, vlog*
-- [ ] "I use Ubuntu to download VMware to run TempleOS." — *Terry, forum*
-- [ ] "It's about a pathetic schizophrenic who made a crappy operating system." — *Terry, Motherboard*
 - [ ] "What's reality? I don't know. When my bird was looking at my computer monitor I thought, 'That bird has no idea what he's looking at.'" — *Terry, vlog*
 
 ### User-supplied verbatim
 
-- [ ] "Brontosaurs' feet hurt when stepped." — *Terry, vlog*
-- [ ] "Thou shall not litter." — *Terry, vlog*
 - [ ] "I like elephants and God likes elephants." — *Terry, vlog*
+- [ ] "The first time you meet an angel you get a horrible beating." — *Terry, vlog*
+- [ ] "Brontosaurs' feet hurt when stepped." — *Terry, vlog*
 - [ ] "Is this too much voodoo?" — *Terry, vlog*
 - [ ] "This is voodoo; the question is - is this too much." — *Terry, vlog*
-- [ ] "The first time you meet an angel you get a horrible beating." — *Terry, vlog*
+- [ ] "Thou shall not litter." — *Terry, vlog*
+
+### Vlog / interview lines (Wikiquote)
+
+- [ ] "You banned me from Twitter, God bans you from Heaven." — *Terry, vlog*
+- [ ] "God likes music that makes you feel." — *Terry, vlog*
+- [ ] "I use Ubuntu to download VMware to run TempleOS." — *Terry, forum*
 
 ---
 

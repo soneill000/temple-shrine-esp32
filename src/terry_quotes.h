@@ -1,9 +1,8 @@
 // terry_quotes.h — Terry Davis verbatim quotes library.
 //
-// This is a user-curated set. Order matches PHRASES.md exactly: 6 user-
-// supplied vlog lines first, then 4 Wikiquote entries. Every quote is
-// verbatim from a verifiable source. Do NOT expand this list without
-// user review — trims happen in PHRASES.md and get mirrored here.
+// This is a user-curated set. Order matches PHRASES.md exactly. Every
+// quote is verbatim from a verifiable source. Do NOT expand this list
+// without user review — trims happen in PHRASES.md and get mirrored here.
 
 #pragma once
 
@@ -13,6 +12,10 @@ typedef struct {
 } terry_quote_t;
 
 static const terry_quote_t TERRY_QUOTES[] = {
+    // Bird-and-monitor quote pinned first per user request.
+    { "What's reality? I don't know. When my bird was looking at my computer monitor I thought, 'That bird has no idea what he's looking at.'",
+                                                     "Terry, vlog" },
+
     // --- User-supplied verbatim ---
     { "I like elephants and God likes elephants.",    "Terry, vlog" },
     { "The first time you meet an angel you get a horrible beating.",
@@ -29,8 +32,6 @@ static const terry_quote_t TERRY_QUOTES[] = {
     { "God likes music that makes you feel.",         "Terry, vlog" },
     { "I use Ubuntu to download VMware to run TempleOS.",
                                                      "Terry, forum" },
-    { "What's reality? I don't know. When my bird was looking at my computer monitor I thought, 'That bird has no idea what he's looking at.'",
-                                                     "Terry, vlog" },
 };
 static const int TERRY_QUOTES_N =
     (int)(sizeof(TERRY_QUOTES) / sizeof(TERRY_QUOTES[0]));
