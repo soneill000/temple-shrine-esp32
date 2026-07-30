@@ -65,6 +65,10 @@
 #define REG_PREAMBLE_MSB            0x20
 #define REG_PREAMBLE_LSB            0x21
 #define REG_PAYLOAD_LENGTH          0x22
+// Errata mitigation registers (SX1276/77/78 Errata §2.3, spurious
+// response mitigation on BW <= 500 kHz).
+#define REG_ERRATA_2F               0x2F
+#define REG_ERRATA_30               0x30
 #define REG_DETECT_OPTIMIZE         0x31
 #define REG_INVERT_IQ               0x33
 #define REG_DETECTION_THRESHOLD     0x37
@@ -181,67 +185,88 @@ bool lora_radio_init(void)
     lora_write_reg(REG_FRF_LSB, 0x00);
 
     // Modem config 1: BW=250kHz (bits 7..4 = 0x8), CR=4/5 (bits 3..1 =
-    // 0x1 → 0x02), explicit header (bit 0 = 0). Meshtastic LongFast
-    // uses CR=4/5, not 4/8 — was a bug in v1 of this driver.
+    // 0x1 → 0x02), explicit header (bit 0 = 0).
     lora_write_reg(REG_MODEM_CONFIG_1, 0x82);
-    // SF=11 (0xB0), CRC on (0x04), continuous mode off.
+    // Modem config 2: SF=11 (bits 7..4 = 0xB), TX single (bit 3 = 0),
+    // CRC on (bit 2 = 1), timeout MSB = 0.
     lora_write_reg(REG_MODEM_CONFIG_2, 0xB4);
-    // LDRO on (mandatory for SF11@250k) + AGC auto on (RX AGC handles
-    // LNA gain so weak signals still demodulate cleanly).
-    lora_write_reg(REG_MODEM_CONFIG_3, 0x0C);
+    // Modem config 3: LDRO OFF (bit 3 = 0) + AGC auto ON (bit 2 = 1).
+    // For BW=250 SF=11, symbol time = 2048/250 = 8.19 ms, well under
+    // the 16 ms LDRO threshold — RadioLib leaves LDRO off in this
+    // case and so must we, otherwise our on-air symbol structure
+    // doesn't match what receivers expect.
+    lora_write_reg(REG_MODEM_CONFIG_3, 0x04);
 
-    // DetectOptimize + DetectionThreshold: SX1276 needs these set
-    // explicitly for SF7..SF12 (see datasheet §4.1.1). Without them the
-    // chip's demodulator won't decode LoRa packets at SF11 at all,
-    // even if everything else is right. Missing these was almost
-    // certainly why receivers were seeing nothing.
-    lora_write_reg(REG_DETECT_OPTIMIZE,     0x03);   // SF7..SF12
-    lora_write_reg(REG_DETECTION_THRESHOLD, 0x0A);   // SF7..SF12
+    // DetectOptimize + DetectionThreshold: SX1276 requires these for
+    // SF7..SF12 (datasheet §4.1.1). RadioLib uses a bit-level modify
+    // that leaves reg 0x31 upper bits at their reset default of 0xC0;
+    // the errata pass below then clears bit 7 to 0. Net result is
+    // 0x43. Writing that directly here.
+    lora_write_reg(REG_DETECT_OPTIMIZE,     0x43);
+    lora_write_reg(REG_DETECTION_THRESHOLD, 0x0A);
 
-    // Non-inverted IQ (Meshtastic default). RadioLib writes these
-    // explicitly; the SX1276 reset defaults are 0x27 / 0x1D which
-    // happen to match, but writing them makes intent obvious.
+    // SX1276/77/78 Errata §2.3 — spurious response mitigation. For
+    // BW ≥ 62.5 kHz the fix is REG 0x2F = 0x40, REG 0x30 = 0x00, and
+    // REG 0x31 bit 7 = 0 (already applied above). Without this the IF
+    // filter is misaligned and receivers miss packets even when
+    // frequency + modulation are correct. This is very likely the
+    // reason our earlier attempts saw nothing on the air.
+    lora_write_reg(REG_ERRATA_2F, 0x40);
+    lora_write_reg(REG_ERRATA_30, 0x00);
+
+    // Non-inverted IQ (Meshtastic default). RadioLib's invertIQ(false)
+    // ends up writing 0x27 to REG_INVERT_IQ (RX_OFF bit 6 = 0 +
+    // TX_ON bit 0 = 1 — TX bit is intentionally swapped per RadioLib
+    // issue #778) and 0x1D to REG_INVERT_IQ2.
     lora_write_reg(REG_INVERT_IQ,  0x27);
     lora_write_reg(REG_INVERT_IQ2, 0x1D);
 
-    // DIO0 -> TxDone when transmitting (bits 7..6 = 01). We poll IRQ
-    // flags rather than using the interrupt line, but leaving DIO0 at
-    // its reset default causes some SX127x variants to misbehave.
-    lora_write_reg(REG_DIO_MAPPING_1, 0x40);
+    // DIO0 -> RxDone (default 0b00). We poll IRQ flags rather than use
+    // the interrupt line, but writing a known mapping is safer than
+    // leaving DIO in whatever POR state it landed in.
+    lora_write_reg(REG_DIO_MAPPING_1, 0x00);
 
-    // Preamble = 16 symbols (Meshtastic uses 16 for LongFast).
+    // Preamble = 16 symbols (Meshtastic default).
     lora_write_reg(REG_PREAMBLE_MSB, 0x00);
     lora_write_reg(REG_PREAMBLE_LSB, 0x10);
 
     // Meshtastic sync word (private-use, 0x2B).
     lora_write_reg(REG_SYNC_WORD, 0x2B);
 
-    // FIFO base pointers to 0 for both TX and RX (we'll reset ptr each op).
+    // FIFO base pointers to 0 for both TX and RX.
     lora_write_reg(REG_FIFO_TX_BASE_ADDR, 0x00);
     lora_write_reg(REG_FIFO_RX_BASE_ADDR, 0x00);
 
-    // PA config: PA_BOOST pin (RFM95W wires PA_BOOST to the antenna),
-    // +17 dBm output. PaSelect=1, OutputPower=15 → Pout = 2 + 15 = 17.
-    lora_write_reg(REG_PA_CONFIG, 0x80 | 0x0F);  // 0x8F
+    // Hop period off (no frequency hopping).
+    lora_write_reg(0x24, 0x00);
 
-    // PA_DAC: 0x84 = default (up to +17 dBm). RadioLib writes this
-    // explicitly on every begin() so the chip doesn't come up in
-    // high-power +20 dBm mode from a stale power-on state.
+    // PA_CONFIG: PA_BOOST pin (bit 7 = 1), MAX_POWER = 0x7 (bits 6..4
+    // — this is what RadioLib actually writes; even though MAX_POWER
+    // is documented as only affecting RFO, RadioLib sets it for
+    // PA_BOOST too and Meshtastic works with it set), OUTPUT_POWER =
+    // power - 2 = 15 = 0xF for +17 dBm. Net = 0x80 | 0x70 | 0x0F = 0xFF.
+    lora_write_reg(REG_PA_CONFIG, 0xFF);
+
+    // PA_DAC: 0x84 = normal mode (bits 2..0 = 0b100 = PA_BOOST_OFF).
+    // 0x87 would be +20 dBm high-power mode — explicitly write 0x84
+    // so a stale POR value can't leave us there.
     lora_write_reg(REG_PA_DAC, 0x84);
 
-    // Over-current protection: 0x3B → I_max ≈ 130 mA. +17 dBm needs
-    // ~90 mA on RFM95W; default 0x2B (100 mA) can trip at max power.
-    lora_write_reg(REG_OCP, 0x3B);
+    // Over-current protection: OCP_ON | raw=3 → 60 mA (RadioLib's
+    // default from begin()). Fine for +17 dBm draw.
+    lora_write_reg(REG_OCP, 0x23);
 
-    // LNA boost on.
+    // LNA: gain=G1 (max) in bits 7..5 + LNA_BOOST_ON in bits 1..0.
     lora_write_reg(REG_LNA, 0x23);
 
-    // Put in continuous RX mode by default.
+    // Enter continuous RX.
     lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_RX_CONTINUOUS);
+    lora_write_reg(REG_FIFO_ADDR_PTR, 0x00);
+    lora_write_reg(REG_IRQ_FLAGS, 0xFF);   // clear any latched flags
 
     s_ready = true;
     s_status = "ready";
-    ESP_LOGI(TAG, "SX1276 up: 906.875 MHz, SF11 BW250 CR4/8, sync 0x2B");
+    ESP_LOGI(TAG, "SX1276 up: 906.875 MHz, SF11 BW250 CR4/5, sync 0x2B (RadioLib-mirror)");
     return true;
 }
 
