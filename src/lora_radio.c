@@ -64,9 +64,14 @@
 #define REG_PREAMBLE_MSB            0x20
 #define REG_PREAMBLE_LSB            0x21
 #define REG_PAYLOAD_LENGTH          0x22
+#define REG_DETECT_OPTIMIZE         0x31
+#define REG_INVERT_IQ               0x33
+#define REG_DETECTION_THRESHOLD     0x37
 #define REG_MODEM_CONFIG_3          0x26
 #define REG_SYNC_WORD               0x39
+#define REG_DIO_MAPPING_1           0x40
 #define REG_VERSION                 0x42
+#define REG_INVERT_IQ2              0x3B
 
 // ---- Modes ----
 #define MODE_LONG_RANGE_MODE        0x80    // LoRa mode
@@ -173,8 +178,28 @@ bool lora_radio_init(void)
     lora_write_reg(REG_MODEM_CONFIG_1, 0x82);
     // SF=11 (0xB0), CRC on (0x04), continuous mode off.
     lora_write_reg(REG_MODEM_CONFIG_2, 0xB4);
-    // Low data rate optimize on for SF11@250k (mandatory per datasheet).
-    lora_write_reg(REG_MODEM_CONFIG_3, 0x08);
+    // LDRO on (mandatory for SF11@250k) + AGC auto on (RX AGC handles
+    // LNA gain so weak signals still demodulate cleanly).
+    lora_write_reg(REG_MODEM_CONFIG_3, 0x0C);
+
+    // DetectOptimize + DetectionThreshold: SX1276 needs these set
+    // explicitly for SF7..SF12 (see datasheet §4.1.1). Without them the
+    // chip's demodulator won't decode LoRa packets at SF11 at all,
+    // even if everything else is right. Missing these was almost
+    // certainly why receivers were seeing nothing.
+    lora_write_reg(REG_DETECT_OPTIMIZE,     0x03);   // SF7..SF12
+    lora_write_reg(REG_DETECTION_THRESHOLD, 0x0A);   // SF7..SF12
+
+    // Non-inverted IQ (Meshtastic default). RadioLib writes these
+    // explicitly; the SX1276 reset defaults are 0x27 / 0x1D which
+    // happen to match, but writing them makes intent obvious.
+    lora_write_reg(REG_INVERT_IQ,  0x27);
+    lora_write_reg(REG_INVERT_IQ2, 0x1D);
+
+    // DIO0 -> TxDone when transmitting (bits 7..6 = 01). We poll IRQ
+    // flags rather than using the interrupt line, but leaving DIO0 at
+    // its reset default causes some SX127x variants to misbehave.
+    lora_write_reg(REG_DIO_MAPPING_1, 0x40);
 
     // Preamble = 16 symbols (Meshtastic uses 16 for LongFast).
     lora_write_reg(REG_PREAMBLE_MSB, 0x00);
