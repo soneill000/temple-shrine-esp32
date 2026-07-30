@@ -1,10 +1,14 @@
 # HOLYMESH broadcast phrase library
 
 Everything the badge can broadcast over LoRa via the HOLYMESH scene, dumped
-here for review. Two pools:
+here for review.
 
-1. **Terry aphorisms** — from `src/terry_quotes.h`. Wire format `T1|Q|<text>`.
-2. **GodWords** — from `src/vocab.h`. Wire format `T1|W|GOD SAYS: <word>`.
+- **COMPOSE mode** (default screen) — auto-generates a random 4-8 word GodWord
+  sequence prefixed with `GOD SAYS:`. A rerolls, DOWN clears, B broadcasts,
+  UP switches to BROWSE. Wire format `T1|C|<text>`.
+- **BROWSE mode** — cycles the Terry aphorisms below. A broadcasts the
+  currently-shown quote. Wire format `T1|Q|<text>`.
+- **INBOX mode** — received messages log.
 
 To trim: delete the lines you don't want, or mark them for removal, and I'll
 apply the edits back to the source. To add new Terry aphorisms in the same

@@ -111,43 +111,16 @@ static void fb_wrap_puts(int row_top, int col_left, int cols_w,
 }
 
 // ---- Content ----
-// The message pool: Terry quotes (from terry_quotes.h) + GodWords (VOCAB).
-// Each entry is a pointer into read-only storage — we pick one and pass
-// its bytes to lora_radio_send.
+// Browse/pick mode only lists Terry quotes. GodWord broadcasting lives
+// exclusively in COMPOSE mode (random sequences) so this section stays
+// curated. Wire format v1: "T1|Q|<text>" for quotes, "T1|C|<text>" for
+// composed sequences (set in the send call below), stripped by receivers.
 
-typedef enum { MSG_QUOTE, MSG_WORD } msg_kind_t;
+static int msg_pool_size(void) { return TERRY_QUOTES_N; }
 
-typedef struct {
-    msg_kind_t kind;
-    int        index;      // into TERRY_QUOTES[] or VOCAB[]
-} msg_ref_t;
-
-static int msg_pool_size(void) { return TERRY_QUOTES_N + VOCAB_N; }
-
-static msg_ref_t msg_at(int i)
+static void format_wire_quote(int quote_idx, char *out, size_t max)
 {
-    msg_ref_t r;
-    if (i < TERRY_QUOTES_N) {
-        r.kind = MSG_QUOTE;
-        r.index = i;
-    } else {
-        r.kind = MSG_WORD;
-        r.index = i - TERRY_QUOTES_N;
-    }
-    return r;
-}
-
-static void format_wire(const msg_ref_t *r, char *out, size_t max)
-{
-    // Wire format v1 (pre-Meshtastic wrap): "T1|<type>|<text>"
-    //   'T1'  magic ("TempleShrine v1")
-    //   type  'Q' quote  'W' word
-    //   text  the payload text
-    if (r->kind == MSG_QUOTE) {
-        snprintf(out, max, "T1|Q|%s", TERRY_QUOTES[r->index].text);
-    } else {
-        snprintf(out, max, "T1|W|GOD SAYS: %s", VOCAB[r->index]);
-    }
+    snprintf(out, max, "T1|Q|%s", TERRY_QUOTES[quote_idx].text);
 }
 
 // ---- Inbox ring buffer ----
@@ -175,29 +148,38 @@ static void inbox_push(const char *text)
 typedef enum { UI_COMPOSE, UI_PICK, UI_PREVIEW, UI_INBOX } ui_mode_t;
 
 // ---- Compose state ----
-// Starts as "GOD SAYS:" and grows as the user picks words. Sent as
+// Terry's own GodWord shuffles the RNG to sequence words divinely; we
+// match that spirit by generating a random 4-8 word sequence prefixed
+// with "GOD SAYS:". User can re-roll for a fresh sequence or clear to
+// an empty phrase; no manual word picking (Terry doesn't let you pick
+// either — the whole point is the machine speaks for God). Sent as
 // "T1|C|<sequence>" so receivers can tell composed messages from
 // curated ones.
 #define COMPOSE_MAX 160
 #define COMPOSE_PREFIX "GOD SAYS:"
 static char s_compose[COMPOSE_MAX];
-static int  s_compose_word_cur;   // index into VOCAB[]
 
-static void compose_reset(void)
+static void compose_clear(void)
 {
-    strncpy(s_compose, COMPOSE_PREFIX, COMPOSE_MAX - 1);
-    s_compose[COMPOSE_MAX - 1] = 0;
-    s_compose_word_cur = 0;
+    s_compose[0] = 0;
 }
 
-static void compose_append_word(const char *w)
+static void compose_reroll(void)
 {
-    int cur_len = (int)strlen(s_compose);
-    int add_len = (int)strlen(w) + 1;   // space + word
-    if (cur_len + add_len >= COMPOSE_MAX - 1) return;  // full
-    s_compose[cur_len] = ' ';
-    strncpy(&s_compose[cur_len + 1], w, COMPOSE_MAX - cur_len - 2);
+    // 4..8 words per sequence — enough for a saying, short enough to
+    // stay readable on the panel.
+    int n_words = 4 + (int)shrine_god(5);
+    strncpy(s_compose, COMPOSE_PREFIX, COMPOSE_MAX - 1);
     s_compose[COMPOSE_MAX - 1] = 0;
+    for (int i = 0; i < n_words; i++) {
+        const char *w = VOCAB[shrine_god(VOCAB_N)];
+        int cur_len = (int)strlen(s_compose);
+        int add_len = (int)strlen(w) + 1;
+        if (cur_len + add_len >= COMPOSE_MAX - 1) break;
+        s_compose[cur_len] = ' ';
+        strncpy(&s_compose[cur_len + 1], w, COMPOSE_MAX - cur_len - 2);
+        s_compose[COMPOSE_MAX - 1] = 0;
+    }
 }
 
 static void draw_frame(const char *title)
@@ -217,24 +199,15 @@ static void render_compose(bool radio_ok)
 {
     draw_frame(" HOLYMESH  -  COMPOSE ");
 
-    fb_puts(2, 2, "COMPOSED PHRASE:", C_LTCYAN, C_BG);
-    // Show the current sequence wrapped to 36 cols across ~9 rows.
-    fb_wrap_puts(4, 2, 36, 9, s_compose, C_LTGREEN, C_BG);
-
-    // Current candidate GodWord.
-    fb_puts(2, 14, "NEXT WORD:", C_LTCYAN, C_BG);
-    fb_puts(13, 14, VOCAB[s_compose_word_cur], C_YELLOW, C_BG);
-    char pg[24];
-    snprintf(pg, sizeof(pg), "%d/%d",
-             s_compose_word_cur + 1, (int)VOCAB_N);
-    fb_puts(TEXT_COLS - 2 - (int)strlen(pg), 14, pg, C_LTMAGENTA, C_BG);
-
-    // Length gauge so user knows when the phrase is getting long.
-    int cur_len = (int)strlen(s_compose);
-    char meter[32];
-    snprintf(meter, sizeof(meter), "LEN %d / %d", cur_len, COMPOSE_MAX - 1);
-    fb_puts(2, 16, meter,
-            (cur_len > COMPOSE_MAX - 20) ? C_LTRED : C_DKGRAY, C_BG);
+    fb_puts(2, 2, "GOD SEQUENCED:", C_LTCYAN, C_BG);
+    bool empty = (s_compose[0] == 0);
+    if (empty) {
+        fb_puts(2, 5, "(phrase cleared)", C_DKGRAY, C_BG);
+        fb_puts(2, 7, "press A to reroll a new phrase", C_LTGRAY, C_BG);
+    } else {
+        // Show the current sequence wrapped to 36 cols across ~14 rows.
+        fb_wrap_puts(4, 2, 36, 14, s_compose, C_LTGREEN, C_BG);
+    }
 
     // Radio status.
     char statusbuf[48];
@@ -250,7 +223,7 @@ static void render_compose(bool radio_ok)
     fb_puts(TEXT_COLS - 10, 20, rxb, C_LTMAGENTA, C_BG);
 
     fb_puts_centered(TEXT_ROWS - 1,
-                     " LR WORD  A ADD  B SEND  DN CLR  UP BROWSE ",
+                     " A REROLL  B SEND  DN CLEAR  UP BROWSE ",
                      C_BG, C_YELLOW);
     display_present_full(s_fb);
 }
@@ -259,22 +232,10 @@ static void render_pick(int cur, bool radio_ok, int msg_count)
 {
     draw_frame(" HOLYMESH  -  BROADCAST ");
 
-    msg_ref_t r = msg_at(cur);
-    const char *body;
-    const char *cite = "";
-    color_t     hue  = C_WHITE;
-    if (r.kind == MSG_QUOTE) {
-        body = TERRY_QUOTES[r.index].text;
-        cite = TERRY_QUOTES[r.index].cite;
-        hue  = C_LTGREEN;
-        fb_puts(2, 2, "TERRY APHORISM", C_LTCYAN, C_BG);
-    } else {
-        body = VOCAB[r.index];
-        hue  = C_YELLOW;
-        fb_puts(2, 2, "GOD SAYS", C_LTCYAN, C_BG);
-    }
-
-    fb_wrap_puts(4, 2, 36, 12, body, hue, C_BG);
+    const char *body = TERRY_QUOTES[cur].text;
+    const char *cite = TERRY_QUOTES[cur].cite;
+    fb_puts(2, 2, "TERRY APHORISM", C_LTCYAN, C_BG);
+    fb_wrap_puts(4, 2, 36, 12, body, C_LTGREEN, C_BG);
 
     if (cite && *cite) {
         char citebuf[64];
@@ -310,14 +271,10 @@ static void render_pick(int cur, bool radio_ok, int msg_count)
     display_present_full(s_fb);
 }
 
-static void render_preview(int cur, const char *wire, bool sent, bool ok)
+static void render_preview(const char *body, const char *wire, bool sent, bool ok)
 {
     draw_frame(sent ? " HOLYMESH  -  SENT " :
                       " HOLYMESH  -  BROADCASTING ");
-    msg_ref_t r = msg_at(cur);
-    const char *body = (r.kind == MSG_QUOTE)
-                       ? TERRY_QUOTES[r.index].text
-                       : VOCAB[r.index];
 
     fb_puts_centered(2, "PRAISE HIM", C_YELLOW, C_BG);
     fb_wrap_puts(5, 2, 36, 10, body, C_WHITE, C_BG);
@@ -374,7 +331,7 @@ void game_lora_run(void)
     int      inbox_scroll = 0;
     char     wire[192];
 
-    compose_reset();
+    compose_reroll();
     render_compose(radio_ok);
 
     while (1) {
@@ -407,23 +364,13 @@ void game_lora_run(void)
 
         switch (mode) {
         case UI_COMPOSE:
-            if (shrine_key_pressed(BTN_LEFT)) {
-                s_compose_word_cur = (s_compose_word_cur - 1 + (int)VOCAB_N) % (int)VOCAB_N;
-                shrine_beep(1200, 12);
-                need_repaint = true;
-            }
-            if (shrine_key_pressed(BTN_RIGHT)) {
-                s_compose_word_cur = (s_compose_word_cur + 1) % (int)VOCAB_N;
-                shrine_beep(1200, 12);
-                need_repaint = true;
-            }
             if (shrine_key_pressed(BTN_A)) {
-                compose_append_word(VOCAB[s_compose_word_cur]);
+                compose_reroll();
                 shrine_beep(1800, 20);
                 need_repaint = true;
             }
             if (shrine_key_pressed(BTN_DOWN)) {
-                compose_reset();
+                compose_clear();
                 shrine_beep(600, 30);
                 need_repaint = true;
             }
@@ -434,13 +381,17 @@ void game_lora_run(void)
                 continue;
             }
             if (shrine_key_pressed(BTN_B)) {
-                // Send the composed phrase. Wire format 'C' = composed.
+                // Send the composed phrase (skip if user cleared).
+                if (s_compose[0] == 0) {
+                    shrine_beep(300, 60);
+                    break;
+                }
                 snprintf(wire, sizeof(wire), "T1|C|%s", s_compose);
-                render_preview(cur, wire, false, false);
+                render_preview(s_compose, wire, false, false);
                 shrine_beep(2200, 60);
                 bool ok = lora_radio_send((const uint8_t *)wire,
                                           strlen(wire));
-                render_preview(cur, wire, true, ok);
+                render_preview(s_compose, wire, true, ok);
                 mode = UI_PREVIEW;
                 preview_return = UI_COMPOSE;
                 continue;
@@ -460,13 +411,13 @@ void game_lora_run(void)
                 need_repaint = true;
             }
             if (shrine_key_pressed(BTN_A)) {
-                msg_ref_t r = msg_at(cur);
-                format_wire(&r, wire, sizeof(wire));
-                render_preview(cur, wire, false, false);
+                const char *body = TERRY_QUOTES[cur].text;
+                format_wire_quote(cur, wire, sizeof(wire));
+                render_preview(body, wire, false, false);
                 shrine_beep(2200, 60);
                 bool ok = lora_radio_send((const uint8_t *)wire,
                                           strlen(wire));
-                render_preview(cur, wire, true, ok);
+                render_preview(body, wire, true, ok);
                 mode = UI_PREVIEW;
                 preview_return = UI_PICK;
                 continue;
