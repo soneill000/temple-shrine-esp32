@@ -5,4 +5,4 @@ FILE(GLOB app_sources ${CMAKE_SOURCE_DIR}/src/*.c)
 
 idf_component_register(SRCS ${app_sources}
                        INCLUDE_DIRS "."
-                       REQUIRES mbedtls esp_hw_support)
+                       REQUIRES esp_hw_support)
