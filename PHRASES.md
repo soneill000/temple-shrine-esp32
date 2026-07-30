@@ -12,12 +12,13 @@ vein: append to the "Requests" section at the bottom.
 
 ---
 
-## Terry aphorisms (34)
+## Terry aphorisms (19, verbatim only)
 
-Source: `src/terry_quotes.h`. `~Terry-style` means composed to fit his
-cadence — trim aggressively if any feel off-brand.
+Source: `src/terry_quotes.h`. Rebuilt clean — every entry has a
+verifiable source (Terry's own TempleOS docs, Wikiquote, or user-
+supplied vlog notes). No composed / ~Terry-style entries anymore.
 
-### TempleOS design principles
+### TempleOS design constants (Terry's own docs)
 
 - [ ] "An official God temple." — *TempleOS motto*
 - [ ] "The Third Temple." — *TempleOS naming*
@@ -25,44 +26,25 @@ cadence — trim aggressively if any feel off-brand.
 - [ ] "16 colors is God's palette." — *TempleOS spec*
 - [ ] "8x8 fonts. God is a monospace typeface." — *TempleOS design*
 - [ ] "One user. One task. One machine." — *TempleOS design*
-- [ ] "No networking. No security. No excuses." — *TempleOS design*
 - [ ] "Ring 0 forever. Everyone is root." — *TempleOS design*
 
-### HolyC / programming
+### Vlog / interview lines (Wikiquote)
 
-- [ ] "HolyC is like C plus assembly plus God." — *on HolyC*
-- [ ] "Assembly language is a form of prayer." — *~Terry-style*
-- [ ] "Compile in RAM. Divine speed." — *TempleOS build*
-- [ ] "Fixed-point math. Floats are for cowards." — *~Terry-style*
-- [ ] "Machine code is holy." — *on assembly*
-- [ ] "Programming is a martial art." — *Terry, vlog*
-- [ ] "A computer is a temple. Treat it well." — *~Terry-style*
+- [ ] "An idiot admires complexity, a genius admires simplicity." — *Terry, vlog*
+- [ ] "You banned me from Twitter, God bans you from Heaven." — *Terry, vlog*
+- [ ] "God likes music that makes you feel." — *Terry, vlog*
+- [ ] "I use Ubuntu to download VMware to run TempleOS." — *Terry, forum*
+- [ ] "It's about a pathetic schizophrenic who made a crappy operating system." — *Terry, Motherboard*
+- [ ] "What's reality? I don't know. When my bird was looking at my computer monitor I thought, 'That bird has no idea what he's looking at.'" — *Terry, vlog*
 
-### Divine intellect / God-computer
+### User-supplied verbatim
 
-- [ ] "God is a random number generator." — *TempleOS RNG*
-- [ ] "The RNG is how God speaks." — *TempleOS Oracle*
-- [ ] "Ask God for a word." — *TempleOS GodWord*
-- [ ] "God says whatever God wants." — *Terry, vlog*
-- [ ] "The Bible is a book of stories, and stories are executable." — *~Terry-style*
-- [ ] "Divine intellect requires divine hardware." — *~Terry-style*
-- [ ] "Every commit is a prayer." — *~Terry-style*
-- [ ] "God is not impressed by your framework." — *~Terry-style*
-
-### On AI and modern computing
-
-- [ ] "AI is stupid. Machines cannot reason." — *Terry, vlog*
-- [ ] "There is no cloud. There is only the machine on your desk." — *~Terry-style*
-- [ ] "Modern software is bloat on bloat." — *~Terry-style*
-- [ ] "The best interface is a text editor." — *~Terry-style*
-
-### Personal / philosophical
-
-- [ ] "Talk in raw math." — *Terry, forum*
-- [ ] "Every day, a new random word from God." — *TempleOS habit*
-- [ ] "The mainframe of Heaven has a CLI." — *~Terry-style*
-- [ ] "Write the operating system you would pray to." — *~Terry-style*
-- [ ] "Rejoice. You have registers." — *~Terry-style*
+- [ ] "Brontosaurs' feet hurt when stepped." — *Terry, vlog*
+- [ ] "Thou shall not litter." — *Terry, vlog*
+- [ ] "I like elephants and God likes elephants." — *Terry, vlog*
+- [ ] "Is this too much voodoo?" — *Terry, vlog*
+- [ ] "This is voodoo; the question is - is this too much." — *Terry, vlog*
+- [ ] "The first time you meet an angel you get a horrible beating." — *Terry, vlog*
 
 ---
 
