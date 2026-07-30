@@ -159,16 +159,18 @@ bool lora_radio_init(void)
     lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_SLEEP);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Frequency: 906.875 MHz  (Meshtastic US LongFast primary).
-    // frf = freq / (32e6 / 2^19). For 906.875 MHz: frf = 0xE28E00.
-    // 906.875e6 / (32e6/524288) = 906.875e6 * 524288 / 32e6 = 14848000
-    // 14848000 in hex = 0xE28E00.
+    // Frequency: 906.875 MHz (Meshtastic US LongFast primary — slot 20
+    // via the default channel-hash algorithm).
+    // Fstep = 32MHz / 2^19 = 61.03515625 Hz
+    // FRF = 906,875,000 / 61.03515625 = 14,858,240 = 0xE2B800
     lora_write_reg(REG_FRF_MSB, 0xE2);
-    lora_write_reg(REG_FRF_MID, 0x8E);
+    lora_write_reg(REG_FRF_MID, 0xB8);
     lora_write_reg(REG_FRF_LSB, 0x00);
 
-    // Modem config: BW=250kHz (0x8), CR=4/8 (0x8), header=explicit (0).
-    lora_write_reg(REG_MODEM_CONFIG_1, 0x88);
+    // Modem config 1: BW=250kHz (bits 7..4 = 0x8), CR=4/5 (bits 3..1 =
+    // 0x1 → 0x02), explicit header (bit 0 = 0). Meshtastic LongFast
+    // uses CR=4/5, not 4/8 — was a bug in v1 of this driver.
+    lora_write_reg(REG_MODEM_CONFIG_1, 0x82);
     // SF=11 (0xB0), CRC on (0x04), continuous mode off.
     lora_write_reg(REG_MODEM_CONFIG_2, 0xB4);
     // Low data rate optimize on for SF11@250k (mandatory per datasheet).
