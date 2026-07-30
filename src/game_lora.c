@@ -161,7 +161,61 @@ static void inbox_push(const char *text)
 //             send the highlighted one with A.
 // UI_PREVIEW: post-send confirmation screen.
 // UI_INBOX:   received messages log.
-typedef enum { UI_COMPOSE, UI_PICK, UI_PREVIEW, UI_INBOX } ui_mode_t;
+// UI_SCAN:    passive scanner — table of every Meshtastic node we've
+//             heard on air, with RSSI and channel-match indicator.
+typedef enum { UI_COMPOSE, UI_PICK, UI_PREVIEW, UI_INBOX, UI_SCAN } ui_mode_t;
+
+// ---- Node scanner table ----
+// Every time we hear ANY frame on air (regardless of whether we can
+// decrypt it), we record the source node ID + RSSI + channel hash.
+// Same node ID => update in place; LRU-evict when the table is full.
+#define SCAN_NODES 16
+typedef struct {
+    uint32_t node_id;
+    int8_t   rssi;
+    uint8_t  channel_hash;
+    bool     on_our_channel;
+    bool     saw_text;       // did we successfully decrypt a text msg from them?
+    uint32_t last_seen_ms;
+    uint32_t heard_count;
+} scan_node_t;
+static scan_node_t s_nodes[SCAN_NODES];
+static int         s_node_count;
+static uint32_t    s_raw_packets;      // any RX at all (including undecodable garbage)
+static uint32_t    s_header_ok;        // header parsed as a valid Meshtastic frame
+
+static void scan_note_packet(uint32_t from, uint8_t channel_hash,
+                             int rssi, bool text_ok)
+{
+    uint32_t now = shrine_ms();
+    // Find existing.
+    int slot = -1;
+    for (int i = 0; i < s_node_count; i++) {
+        if (s_nodes[i].node_id == from) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (s_node_count < SCAN_NODES) {
+            slot = s_node_count++;
+        } else {
+            // LRU-evict oldest last_seen.
+            uint32_t oldest = 0xFFFFFFFFu;
+            for (int i = 0; i < SCAN_NODES; i++) {
+                if (s_nodes[i].last_seen_ms < oldest) {
+                    oldest = s_nodes[i].last_seen_ms;
+                    slot = i;
+                }
+            }
+            memset(&s_nodes[slot], 0, sizeof(s_nodes[slot]));
+        }
+    }
+    s_nodes[slot].node_id      = from;
+    s_nodes[slot].rssi         = (int8_t)rssi;
+    s_nodes[slot].channel_hash = channel_hash;
+    s_nodes[slot].on_our_channel = (channel_hash == MESHTASTIC_LONGFAST_CHANNEL_HASH);
+    if (text_ok) s_nodes[slot].saw_text = true;
+    s_nodes[slot].last_seen_ms = now;
+    s_nodes[slot].heard_count++;
+}
 
 // ---- Compose state ----
 // Terry's own GodWord shuffles the RNG to sequence words divinely; we
@@ -341,6 +395,78 @@ static void render_inbox(int scroll_top)
     display_present_full(s_fb);
 }
 
+static void render_scan(void)
+{
+    draw_frame(" HOLYMESH  -  SCAN ");
+    fb_puts(2, 2, "MESHTASTIC NODES HEARD", C_LTCYAN, C_BG);
+
+    char stats[48];
+    snprintf(stats, sizeof(stats),
+             "raw:%lu  hdr:%lu  known:%d/%d",
+             (unsigned long)s_raw_packets,
+             (unsigned long)s_header_ok,
+             s_node_count, SCAN_NODES);
+    fb_puts(2, 3, stats, C_DKGRAY, C_BG);
+
+    if (s_node_count == 0) {
+        fb_puts_centered(11, "listening...", C_LTGRAY, C_BG);
+        fb_puts_centered(13, "no packets on air yet",
+                         C_DKGRAY, C_BG);
+        fb_puts_centered(14,
+                         "if this stays 0, RX is broken",
+                         C_DKGRAY, C_BG);
+    } else {
+        // Column headers.
+        fb_puts(2, 5, "ID       RSSI  CH  AGE   MSGS", C_LTCYAN, C_BG);
+        uint32_t now = shrine_ms();
+        // Show up to 12 rows; newest last-seen at top.
+        // Simple selection sort by last_seen desc (small N).
+        int idx[SCAN_NODES];
+        for (int i = 0; i < s_node_count; i++) idx[i] = i;
+        for (int i = 0; i < s_node_count; i++) {
+            for (int j = i + 1; j < s_node_count; j++) {
+                if (s_nodes[idx[j]].last_seen_ms >
+                    s_nodes[idx[i]].last_seen_ms) {
+                    int t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+                }
+            }
+        }
+        int show = s_node_count < 12 ? s_node_count : 12;
+        for (int i = 0; i < show; i++) {
+            const scan_node_t *n = &s_nodes[idx[i]];
+            char row[48];
+            uint32_t age_s = (now - n->last_seen_ms) / 1000;
+            if (age_s > 999) age_s = 999;
+            char chan_tag = n->on_our_channel ? '*' : ' ';
+            snprintf(row, sizeof(row),
+                     "%08lx %4d %02x%c %4lus %5lu",
+                     (unsigned long)n->node_id,
+                     (int)n->rssi,
+                     n->channel_hash, chan_tag,
+                     (unsigned long)age_s,
+                     (unsigned long)n->heard_count);
+            color_t hue = n->saw_text     ? C_LTGREEN
+                        : n->on_our_channel ? C_YELLOW
+                        : C_LTGRAY;
+            fb_puts(2, 6 + i, row, hue, C_BG);
+        }
+    }
+
+    fb_puts(2, 20, "* on our channel   green: text OK",
+            C_DKGRAY, C_BG);
+    char meta[48];
+    snprintf(meta, sizeof(meta),
+             "our ID %08lx  ch %02x",
+             (unsigned long)meshtastic_my_node_id(),
+             MESHTASTIC_LONGFAST_CHANNEL_HASH);
+    fb_puts(2, 21, meta, C_DKGRAY, C_BG);
+
+    fb_puts_centered(TEXT_ROWS - 1,
+                     " A CLEAR  B BACK  BOOT EXIT ",
+                     C_BG, C_YELLOW);
+    display_present_full(s_fb);
+}
+
 // ---- Main loop ----
 
 void game_lora_run(void)
@@ -361,22 +487,37 @@ void game_lora_run(void)
         shrine_input_scan();
         if (shrine_should_quit()) return;
 
-        // Passive receive — poll every frame. Decrypt as a Meshtastic
-        // text frame on the LongFast channel; skip anything that isn't.
+        // Passive receive — poll every frame. Every raw packet gets
+        // counted; well-formed Meshtastic headers feed the node
+        // scanner table; text-message frames on our channel land in
+        // the inbox with the decrypted text.
         {
             uint8_t buf[MESHTASTIC_MAX_FRAME];
             int rssi = 0;
             size_t n = lora_radio_recv(buf, sizeof(buf), &rssi);
             if (n > 0) {
+                s_raw_packets++;
+                uint32_t hdr_from = 0;
+                uint8_t  hdr_chan = 0;
+                bool header_ok = meshtastic_parse_header(buf, n, NULL,
+                                                         &hdr_from, NULL,
+                                                         &hdr_chan, NULL);
+                if (header_ok) s_header_ok++;
+                // Try full text decode for the inbox.
                 char text[180];
                 uint32_t from = 0;
-                if (meshtastic_parse_text(buf, n, text, sizeof(text), &from)) {
+                bool text_ok = meshtastic_parse_text(buf, n, text,
+                                                    sizeof(text), &from);
+                if (text_ok) {
                     char line[220];
                     snprintf(line, sizeof(line),
                              "[R%d %08lx] %.140s",
                              rssi, (unsigned long)from, text);
                     inbox_push(line);
                     shrine_beep(1800, 40);
+                }
+                if (header_ok) {
+                    scan_note_packet(hdr_from, hdr_chan, rssi, text_ok);
                 }
             }
         }
@@ -456,6 +597,12 @@ void game_lora_run(void)
                 render_compose(radio_ok);
                 continue;
             }
+            if (shrine_key_pressed(BTN_DOWN)) {
+                mode = UI_SCAN;
+                shrine_beep(1400, 20);
+                render_scan();
+                continue;
+            }
             if (need_repaint) render_pick(cur, radio_ok, msg_n);
             break;
 
@@ -483,6 +630,34 @@ void game_lora_run(void)
                 render_pick(cur, radio_ok, msg_n);
             }
             break;
+
+        case UI_SCAN: {
+            if (shrine_key_pressed(BTN_A)) {
+                // Clear the table + counters.
+                memset(s_nodes, 0, sizeof(s_nodes));
+                s_node_count = 0;
+                s_raw_packets = 0;
+                s_header_ok = 0;
+                shrine_beep(600, 30);
+                render_scan();
+                continue;
+            }
+            if (shrine_key_pressed(BTN_B)) {
+                mode = UI_PICK;
+                shrine_beep(1400, 20);
+                render_pick(cur, radio_ok, msg_n);
+                continue;
+            }
+            // Repaint ~2x/sec so ages tick and new packets show up
+            // without needing button input.
+            static uint32_t last_scan_paint;
+            uint32_t now_ms = shrine_ms();
+            if (now_ms - last_scan_paint > 500) {
+                last_scan_paint = now_ms;
+                render_scan();
+            }
+            break;
+        }
         }
 
         shrine_sleep_ms(30);

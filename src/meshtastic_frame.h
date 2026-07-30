@@ -50,3 +50,19 @@ size_t meshtastic_build_text(const char *text, uint32_t packet_id,
 bool meshtastic_parse_text(const uint8_t *in, size_t in_len,
                            char *text_out, size_t text_max,
                            uint32_t *from_node_out);
+
+// Parse only the 16-byte Meshtastic header — no decryption, no payload
+// inspection. Useful for a node scanner: any well-formed frame on air
+// gives us its source node ID + channel hash regardless of which
+// channel PSK the sender used. Returns true if in_len looks plausible.
+// All output params are optional.
+bool meshtastic_parse_header(const uint8_t *in, size_t in_len,
+                             uint32_t *to_out,
+                             uint32_t *from_out,
+                             uint32_t *id_out,
+                             uint8_t  *channel_hash_out,
+                             uint8_t  *flags_out);
+
+// Channel hash byte we broadcast under (LongFast default). Callers can
+// use this to tell whether a heard packet is on our channel.
+#define MESHTASTIC_LONGFAST_CHANNEL_HASH 0x08

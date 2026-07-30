@@ -14,6 +14,12 @@ badge's phrases in their normal text-message UI.
 - **BROWSE mode** — cycles the Terry aphorisms below. A broadcasts the
   currently-shown quote.
 - **INBOX mode** — received Meshtastic text messages log (with source node ID).
+- **SCAN mode** — passive node scanner. Every Meshtastic frame on air is
+  logged with its source node ID, RSSI, channel hash, age since last seen,
+  and total heard count. Nodes on our channel are starred, and nodes we've
+  successfully decrypted text from are highlighted green. Also shows raw
+  packet count and header-parse count so you can see if RX is working at
+  all. Reachable from BROWSE via DOWN.
 
 To trim: delete the lines you don't want, or mark them for removal, and I'll
 apply the edits back to the source. To add new Terry aphorisms in the same

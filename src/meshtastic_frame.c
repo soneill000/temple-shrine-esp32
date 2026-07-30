@@ -372,3 +372,34 @@ bool meshtastic_parse_text(const uint8_t *in, size_t in_len,
     if (from_node_out) *from_node_out = from;
     return true;
 }
+
+bool meshtastic_parse_header(const uint8_t *in, size_t in_len,
+                             uint32_t *to_out,
+                             uint32_t *from_out,
+                             uint32_t *id_out,
+                             uint8_t  *channel_hash_out,
+                             uint8_t  *flags_out)
+{
+    if (!in || in_len < HDR_SIZE) return false;
+    if (to_out) {
+        *to_out = (uint32_t)in[HDR_TO_OFF+0]
+                | ((uint32_t)in[HDR_TO_OFF+1] << 8)
+                | ((uint32_t)in[HDR_TO_OFF+2] << 16)
+                | ((uint32_t)in[HDR_TO_OFF+3] << 24);
+    }
+    if (from_out) {
+        *from_out = (uint32_t)in[HDR_FROM_OFF+0]
+                  | ((uint32_t)in[HDR_FROM_OFF+1] << 8)
+                  | ((uint32_t)in[HDR_FROM_OFF+2] << 16)
+                  | ((uint32_t)in[HDR_FROM_OFF+3] << 24);
+    }
+    if (id_out) {
+        *id_out = (uint32_t)in[HDR_ID_OFF+0]
+                | ((uint32_t)in[HDR_ID_OFF+1] << 8)
+                | ((uint32_t)in[HDR_ID_OFF+2] << 16)
+                | ((uint32_t)in[HDR_ID_OFF+3] << 24);
+    }
+    if (channel_hash_out) *channel_hash_out = in[HDR_CHAN_OFF];
+    if (flags_out)        *flags_out        = in[HDR_FLAGS_OFF];
+    return true;
+}
