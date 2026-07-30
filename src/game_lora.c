@@ -166,7 +166,39 @@ static void inbox_push(const char *text)
 }
 
 // ---- UI modes ----
-typedef enum { UI_PICK, UI_PREVIEW, UI_INBOX } ui_mode_t;
+// UI_COMPOSE: sequence GodWords into a phrase, send when ready (first
+//             option in the scene; matches user request).
+// UI_PICK:    browse curated Terry aphorisms + single GodWord entries,
+//             send the highlighted one with A.
+// UI_PREVIEW: post-send confirmation screen.
+// UI_INBOX:   received messages log.
+typedef enum { UI_COMPOSE, UI_PICK, UI_PREVIEW, UI_INBOX } ui_mode_t;
+
+// ---- Compose state ----
+// Starts as "GOD SAYS:" and grows as the user picks words. Sent as
+// "T1|C|<sequence>" so receivers can tell composed messages from
+// curated ones.
+#define COMPOSE_MAX 160
+#define COMPOSE_PREFIX "GOD SAYS:"
+static char s_compose[COMPOSE_MAX];
+static int  s_compose_word_cur;   // index into VOCAB[]
+
+static void compose_reset(void)
+{
+    strncpy(s_compose, COMPOSE_PREFIX, COMPOSE_MAX - 1);
+    s_compose[COMPOSE_MAX - 1] = 0;
+    s_compose_word_cur = 0;
+}
+
+static void compose_append_word(const char *w)
+{
+    int cur_len = (int)strlen(s_compose);
+    int add_len = (int)strlen(w) + 1;   // space + word
+    if (cur_len + add_len >= COMPOSE_MAX - 1) return;  // full
+    s_compose[cur_len] = ' ';
+    strncpy(&s_compose[cur_len + 1], w, COMPOSE_MAX - cur_len - 2);
+    s_compose[COMPOSE_MAX - 1] = 0;
+}
 
 static void draw_frame(const char *title)
 {
@@ -179,6 +211,48 @@ static void draw_frame(const char *title)
     fb_fill_rect(SCREEN_W - GLYPH_W, GLYPH_H, GLYPH_W,
                  SCREEN_H - 2 * GLYPH_H, C_YELLOW);
     fb_puts_centered(0, title, C_BG, C_YELLOW);
+}
+
+static void render_compose(bool radio_ok)
+{
+    draw_frame(" HOLYMESH  -  COMPOSE ");
+
+    fb_puts(2, 2, "COMPOSED PHRASE:", C_LTCYAN, C_BG);
+    // Show the current sequence wrapped to 36 cols across ~9 rows.
+    fb_wrap_puts(4, 2, 36, 9, s_compose, C_LTGREEN, C_BG);
+
+    // Current candidate GodWord.
+    fb_puts(2, 14, "NEXT WORD:", C_LTCYAN, C_BG);
+    fb_puts(13, 14, VOCAB[s_compose_word_cur], C_YELLOW, C_BG);
+    char pg[24];
+    snprintf(pg, sizeof(pg), "%d/%d",
+             s_compose_word_cur + 1, (int)VOCAB_N);
+    fb_puts(TEXT_COLS - 2 - (int)strlen(pg), 14, pg, C_LTMAGENTA, C_BG);
+
+    // Length gauge so user knows when the phrase is getting long.
+    int cur_len = (int)strlen(s_compose);
+    char meter[32];
+    snprintf(meter, sizeof(meter), "LEN %d / %d", cur_len, COMPOSE_MAX - 1);
+    fb_puts(2, 16, meter,
+            (cur_len > COMPOSE_MAX - 20) ? C_LTRED : C_DKGRAY, C_BG);
+
+    // Radio status.
+    char statusbuf[48];
+    if (radio_ok) snprintf(statusbuf, sizeof(statusbuf), "RADIO: READY");
+    else          snprintf(statusbuf, sizeof(statusbuf), "RADIO OFF (%s)",
+                           lora_radio_status());
+    fb_puts(2, 20, statusbuf, radio_ok ? C_LTGREEN : C_LTRED, C_BG);
+    fb_puts(2, 21, "915 MHz  SF11  BW250  LongFast", C_DKGRAY, C_BG);
+
+    // Received-count preview.
+    char rxb[24];
+    snprintf(rxb, sizeof(rxb), "INBOX %d", s_inbox_n);
+    fb_puts(TEXT_COLS - 10, 20, rxb, C_LTMAGENTA, C_BG);
+
+    fb_puts_centered(TEXT_ROWS - 1,
+                     " LR WORD  A ADD  B SEND  DN CLR  UP BROWSE ",
+                     C_BG, C_YELLOW);
+    display_present_full(s_fb);
 }
 
 static void render_pick(int cur, bool radio_ok, int msg_count)
@@ -231,7 +305,8 @@ static void render_pick(int cur, bool radio_ok, int msg_count)
     fb_puts(TEXT_COLS - 10, 20, rxb, C_LTMAGENTA, C_BG);
 
     fb_puts_centered(TEXT_ROWS - 1,
-                     " LR BROWSE  A SEND  B INBOX ", C_BG, C_YELLOW);
+                     " LR BROWSE  A SEND  B INBOX  UP COMPOSE ",
+                     C_BG, C_YELLOW);
     display_present_full(s_fb);
 }
 
@@ -294,11 +369,13 @@ void game_lora_run(void)
 
     int      cur      = 0;
     int      msg_n    = msg_pool_size();
-    ui_mode_t mode    = UI_PICK;
+    ui_mode_t mode    = UI_COMPOSE;    // land on COMPOSE first (user request)
+    ui_mode_t preview_return = UI_COMPOSE;   // where to go back to after send
     int      inbox_scroll = 0;
     char     wire[192];
 
-    render_pick(cur, radio_ok, msg_n);
+    compose_reset();
+    render_compose(radio_ok);
 
     while (1) {
         shrine_input_scan();
@@ -329,6 +406,48 @@ void game_lora_run(void)
         bool need_repaint = false;
 
         switch (mode) {
+        case UI_COMPOSE:
+            if (shrine_key_pressed(BTN_LEFT)) {
+                s_compose_word_cur = (s_compose_word_cur - 1 + (int)VOCAB_N) % (int)VOCAB_N;
+                shrine_beep(1200, 12);
+                need_repaint = true;
+            }
+            if (shrine_key_pressed(BTN_RIGHT)) {
+                s_compose_word_cur = (s_compose_word_cur + 1) % (int)VOCAB_N;
+                shrine_beep(1200, 12);
+                need_repaint = true;
+            }
+            if (shrine_key_pressed(BTN_A)) {
+                compose_append_word(VOCAB[s_compose_word_cur]);
+                shrine_beep(1800, 20);
+                need_repaint = true;
+            }
+            if (shrine_key_pressed(BTN_DOWN)) {
+                compose_reset();
+                shrine_beep(600, 30);
+                need_repaint = true;
+            }
+            if (shrine_key_pressed(BTN_UP)) {
+                mode = UI_PICK;
+                shrine_beep(1400, 20);
+                render_pick(cur, radio_ok, msg_n);
+                continue;
+            }
+            if (shrine_key_pressed(BTN_B)) {
+                // Send the composed phrase. Wire format 'C' = composed.
+                snprintf(wire, sizeof(wire), "T1|C|%s", s_compose);
+                render_preview(cur, wire, false, false);
+                shrine_beep(2200, 60);
+                bool ok = lora_radio_send((const uint8_t *)wire,
+                                          strlen(wire));
+                render_preview(cur, wire, true, ok);
+                mode = UI_PREVIEW;
+                preview_return = UI_COMPOSE;
+                continue;
+            }
+            if (need_repaint) render_compose(radio_ok);
+            break;
+
         case UI_PICK:
             if (shrine_key_pressed(BTN_LEFT)) {
                 cur = (cur - 1 + msg_n) % msg_n;
@@ -349,6 +468,7 @@ void game_lora_run(void)
                                           strlen(wire));
                 render_preview(cur, wire, true, ok);
                 mode = UI_PREVIEW;
+                preview_return = UI_PICK;
                 continue;
             }
             if (shrine_key_pressed(BTN_B)) {
@@ -358,17 +478,20 @@ void game_lora_run(void)
                 render_inbox(inbox_scroll);
                 continue;
             }
+            if (shrine_key_pressed(BTN_UP)) {
+                mode = UI_COMPOSE;
+                shrine_beep(1400, 20);
+                render_compose(radio_ok);
+                continue;
+            }
             if (need_repaint) render_pick(cur, radio_ok, msg_n);
             break;
 
         case UI_PREVIEW:
-            if (shrine_key_pressed(BTN_A)) {
-                mode = UI_PICK;
-                render_pick(cur, radio_ok, msg_n);
-            }
-            if (shrine_key_pressed(BTN_B)) {
-                mode = UI_PICK;
-                render_pick(cur, radio_ok, msg_n);
+            if (shrine_key_pressed(BTN_A) || shrine_key_pressed(BTN_B)) {
+                mode = preview_return;
+                if (mode == UI_COMPOSE) render_compose(radio_ok);
+                else                    render_pick(cur, radio_ok, msg_n);
             }
             break;
 

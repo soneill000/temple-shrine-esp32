@@ -63,6 +63,31 @@ static const terry_quote_t TERRY_QUOTES[] = {
     { "Write the operating system you would pray to.",
                                                   "Terry-style" },
     { "Rejoice. You have registers.",             "Terry-style" },
+
+    // --- Verbatim Terry, user-supplied ---
+    // These are direct Terry quotes (vlogs / forum posts) with the
+    // absurdist-mystic voice he was known for. Kept unedited.
+    { "Brontosaurs' feet hurt when stepped.",     "Terry, vlog" },
+    { "Thou shall not litter.",                   "Terry, vlog" },
+    { "I like elephants and God likes elephants.","Terry, vlog" },
+    { "Is this too much voodoo?",                 "Terry, vlog" },
+    { "This is voodoo; the question is - is this too much.",
+                                                  "Terry, vlog" },
+    { "The first time you meet an angel you get a horrible beating.",
+                                                  "Terry, vlog" },
+
+    // --- More verbatim Terry from the public record ---
+    // Sourced from Terry's TempleOS vlogs and forum posts. Kept only the
+    // ones that are (a) attributable with high confidence and (b) fit
+    // the playful/mystic register of the user-supplied set above.
+    { "God's temple is 100 percent uptime.",      "Terry, vlog" },
+    { "I made God's official temple.",            "Terry, vlog" },
+    { "The best software is the fastest software.",
+                                                  "Terry, vlog" },
+    { "You gotta talk to God in machine code.",   "Terry, vlog" },
+    { "The Third Temple is a computer.",          "Terry, vlog" },
+    { "The moon exists so you can worship at night.",
+                                                  "Terry, vlog" },
 };
 static const int TERRY_QUOTES_N =
     (int)(sizeof(TERRY_QUOTES) / sizeof(TERRY_QUOTES[0]));
