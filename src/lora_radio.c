@@ -46,6 +46,7 @@
 // ---- SX127x register addresses (SX1276 datasheet §6.4) ----
 #define REG_FIFO                    0x00
 #define REG_OP_MODE                 0x01
+#define REG_OCP                     0x0B
 #define REG_FRF_MSB                 0x06
 #define REG_FRF_MID                 0x07
 #define REG_FRF_LSB                 0x08
@@ -71,6 +72,7 @@
 #define REG_SYNC_WORD               0x39
 #define REG_DIO_MAPPING_1           0x40
 #define REG_VERSION                 0x42
+#define REG_PA_DAC                  0x4D
 #define REG_INVERT_IQ2              0x3B
 
 // ---- Modes ----
@@ -160,8 +162,14 @@ bool lora_radio_init(void)
         return false;
     }
 
-    // Sleep, then switch to LoRa mode.
-    lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_SLEEP);
+    // Enter LoRa mode. Per SX1276 datasheet §4.1: "Access to
+    // LongRange (bit 7) is only possible in Sleep mode." After power-
+    // on the chip is in FSK STANDBY, so we must transition through
+    // FSK SLEEP before setting the LongRange bit — writing 0x80
+    // directly from Standby is silently ignored on many parts.
+    lora_write_reg(REG_OP_MODE, MODE_SLEEP);                            // FSK sleep
+    vTaskDelay(pdMS_TO_TICKS(10));
+    lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_SLEEP);     // LoRa sleep
     vTaskDelay(pdMS_TO_TICKS(10));
 
     // Frequency: 906.875 MHz (Meshtastic US LongFast primary — slot 20
@@ -212,8 +220,18 @@ bool lora_radio_init(void)
     lora_write_reg(REG_FIFO_TX_BASE_ADDR, 0x00);
     lora_write_reg(REG_FIFO_RX_BASE_ADDR, 0x00);
 
-    // PA config: PA_BOOST pin, +17 dBm.
-    lora_write_reg(REG_PA_CONFIG, 0x80 | (17 - 2));  // 0x8F
+    // PA config: PA_BOOST pin (RFM95W wires PA_BOOST to the antenna),
+    // +17 dBm output. PaSelect=1, OutputPower=15 → Pout = 2 + 15 = 17.
+    lora_write_reg(REG_PA_CONFIG, 0x80 | 0x0F);  // 0x8F
+
+    // PA_DAC: 0x84 = default (up to +17 dBm). RadioLib writes this
+    // explicitly on every begin() so the chip doesn't come up in
+    // high-power +20 dBm mode from a stale power-on state.
+    lora_write_reg(REG_PA_DAC, 0x84);
+
+    // Over-current protection: 0x3B → I_max ≈ 130 mA. +17 dBm needs
+    // ~90 mA on RFM95W; default 0x2B (100 mA) can trip at max power.
+    lora_write_reg(REG_OCP, 0x3B);
 
     // LNA boost on.
     lora_write_reg(REG_LNA, 0x23);
@@ -236,6 +254,9 @@ bool lora_radio_send(const uint8_t *buf, size_t len)
 
     // Standby.
     lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_STDBY);
+    // Clear all IRQ flags before TX so a stale RxDone from continuous
+    // RX doesn't spoof the poll loop.
+    lora_write_reg(REG_IRQ_FLAGS, 0xFF);
     // Reset FIFO ptr.
     lora_write_reg(REG_FIFO_ADDR_PTR, 0x00);
     lora_write_reg(REG_PAYLOAD_LENGTH, (uint8_t)len);
