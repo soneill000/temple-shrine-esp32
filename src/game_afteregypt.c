@@ -1829,12 +1829,10 @@ static void horeb_init(void)
 // half of Terry's UpTheMountain flow that runs BEFORE the Horeb wander.
 // Walker climbs up a set of zig-zag waypoints (Terry: BSpline2 through
 // 17 control points; we linear-interp through the 9 unique waypoints
-// which reads the same on our screen). Uses procedural brown triangle
-// hill silhouettes (echoing the zig-zag path) + the walker frames
-// extracted from Mountain.HC's tail. Terry's own Mountain BI=1 sprite
-// is skipped — on badge it renders as a dense LTCYAN slab; user recalls
-// his scene as simple hill silhouettes on a yellow desert. Returns true
-// if the user aborted; false if the climb completed.
+// which reads the same on our screen). Uses Terry's real Mountain BI=1
+// sprite (SPT_BITMAP 640x118, anchor y=-117) as the silhouette + the
+// walker frames extracted from Mountain.HC's tail. Returns true if the
+// user aborted; false if the climb completed.
 static bool scene_mountain(void)
 {
     static const int WP_X[9] = {  0, 100, -100,  80, -80,  60, -60,  40, -37 };
@@ -1876,16 +1874,13 @@ static bool scene_mountain(void)
         int x = WP_X[wp_idx] + (int)((WP_X[wp_idx + 1] - WP_X[wp_idx]) * t);
         int y = WP_Y[wp_idx] + (int)((WP_Y[wp_idx + 1] - WP_Y[wp_idx]) * t);
 
-        // Sky + desert seam. Terry's Mountain BI=1 sprite renders as a
-        // dense LTCYAN slab on our badge; the user recalls his real
-        // ascent scene as plain sky + yellow ground with simple zig-zag
-        // hill silhouettes that mirror the walker's climbing path. We
-        // paint those hill silhouettes as brown triangles below.
-        const int horizon_y = 200;
+        // Sky (top) + desert (below the mountain silhouette). Terry's
+        // Mountain sprite is 640x118 anchored at y=117 with header y=-117
+        // so its bottom edge sits at y=117 = sky/desert seam.
         gr_dc.color = C_LTCYAN;
-        GrFillRect(&gr_dc, 0, 0, 640, horizon_y);
+        GrFillRect(&gr_dc, 0, 0, 640, 117);
         gr_dc.color = C_YELLOW;
-        GrFillRect(&gr_dc, 0, horizon_y, 640, 480 - horizon_y);
+        GrFillRect(&gr_dc, 0, 117, 640, 480 - 117);
 
         // Sun — Terry: brown outline + yellow flood at (50, 25) r=15.
         gr_dc.color = C_BROWN;
@@ -1893,57 +1888,9 @@ static bool scene_mountain(void)
         gr_dc.color = C_YELLOW;
         GrFillCircle(&gr_dc, 50, 25, 14);
 
-        // Simple hill silhouettes — two ridges of brown triangles rising
-        // in front of the yellow desert. Filled by scanning each column
-        // between the ridge endpoints and painting from the ridge line
-        // down to the horizon, so they read as solid hills instead of
-        // just outlines against the split yellow/blue background. Not
-        // Terry's mountain bitmap; matches user's memory of the scene as
-        // "simple drawings of hills, similar to the zig-zag path he
-        // ascends."
-        static const int RIDGE_BACK_X[]  = {  30, 220, 420, 610, 640 };
-        static const int RIDGE_BACK_Y[]  = {   0, -90, -40, -70, -30 };
-        static const int RIDGE_FRONT_X[] = {  80, 300, 500, 640 };
-        static const int RIDGE_FRONT_Y[] = {   0, -130, -60, -20 };
-
-        // Back ridge — darker brown so the front ridge stands out.
-        gr_dc.color = C_BROWN;
-        for (int seg = 0; seg + 1 < (int)(sizeof(RIDGE_BACK_X)/sizeof(int)); seg++) {
-            int x0 = RIDGE_BACK_X[seg],     y0 = horizon_y + RIDGE_BACK_Y[seg];
-            int x1 = RIDGE_BACK_X[seg + 1], y1 = horizon_y + RIDGE_BACK_Y[seg + 1];
-            if (x1 <= x0) continue;
-            for (int x = x0; x <= x1; x++) {
-                int y = y0 + (y1 - y0) * (x - x0) / (x1 - x0);
-                if (y < horizon_y) {
-                    GrFillRect(&gr_dc, x, y, 1, horizon_y - y);
-                }
-            }
-        }
-
-        // Front ridge — YELLOW fill with brown outline so it reads as a
-        // near hill in front of the darker back ridge. Same fill logic.
-        gr_dc.color = C_YELLOW;
-        for (int seg = 0; seg + 1 < (int)(sizeof(RIDGE_FRONT_X)/sizeof(int)); seg++) {
-            int x0 = RIDGE_FRONT_X[seg],     y0 = horizon_y + RIDGE_FRONT_Y[seg];
-            int x1 = RIDGE_FRONT_X[seg + 1], y1 = horizon_y + RIDGE_FRONT_Y[seg + 1];
-            if (x1 <= x0) continue;
-            for (int x = x0; x <= x1; x++) {
-                int y = y0 + (y1 - y0) * (x - x0) / (x1 - x0);
-                if (y < horizon_y) {
-                    GrFillRect(&gr_dc, x, y, 1, horizon_y - y);
-                }
-            }
-        }
-        // Outline the front ridge in brown so it separates from the
-        // yellow desert below and reads as a distinct hill shape.
-        gr_dc.color = C_BROWN;
-        gr_dc.thick = 2;
-        for (int seg = 0; seg + 1 < (int)(sizeof(RIDGE_FRONT_X)/sizeof(int)); seg++) {
-            GrLine(&gr_dc,
-                   RIDGE_FRONT_X[seg],     horizon_y + RIDGE_FRONT_Y[seg],
-                   RIDGE_FRONT_X[seg + 1], horizon_y + RIDGE_FRONT_Y[seg + 1]);
-        }
-        gr_dc.thick = 1;
+        // Mountain silhouette — real Terry sprite BI=1.
+        Sprite3(&gr_dc, 0, 117, 0,
+                SPRITE_MOUNTAIN_BI_1, SPRITE_MOUNTAIN_BI_1_SIZE);
 
         // Trail — Terry draws 8 brown line segments between waypoints.
         gr_dc.color = C_BROWN;
