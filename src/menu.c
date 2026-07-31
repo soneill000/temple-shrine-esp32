@@ -31,7 +31,6 @@ static const menu_entry_t ENTRIES[] = {
     { "DIGITS",          game_digits_run     },
     { "BOMBERGOLF",      game_bombergolf_run },
     { "SQUIRT",          game_squirt_run     },
-    { "WHAP",            game_whap_run       },
     { "BUGBIRD",         game_bugbird_run    },
 };
 #define N_ENTRIES (int)(sizeof(ENTRIES)/sizeof(ENTRIES[0]))

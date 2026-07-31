@@ -10,7 +10,7 @@ void game_chronicle_run(void);
 // (game_tictactoe removed — not enough Terry-specific charm)
 // (game_slider removed — same reason)
 void game_bugbird_run(void);   // Terry's actual bird-catches-bugs (replaces FlapBat)
-void game_whap_run(void);
+// (game_whap removed — same reason as slider/tictactoe)
 void game_talons_run(void);   // Tier-2 voxel-terrain flight demo
 
 // Real ports from Terry's TempleOS Demo/Games/*.HC.
