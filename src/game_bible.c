@@ -282,12 +282,18 @@ void game_bible_run(void)
 
         if (mode == MODE_INDEX) {
             if (shrine_key_pressed(BTN_A)) {
-                // Open the selected book at its first verse.
+                // Open the selected book at its first verse. Render
+                // the passage view directly and continue -- without
+                // this, we'd fall through to the render_index() call
+                // below and paint the index over the passage until the
+                // user pressed another key that triggered a repaint,
+                // which read as "A did nothing until I pressed down."
                 idx        = book_first[book_sel];
                 scroll_top = 0;
                 mode       = MODE_READ;
                 shrine_beep(1800, 40);
-                need_repaint = true;
+                render_passage(idx, scroll_top);
+                continue;
             }
             if (shrine_key_pressed(BTN_B)) {
                 // B from index exits back to the launcher menu.
