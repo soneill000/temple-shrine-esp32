@@ -80,3 +80,14 @@ size_t meshtastic_build_nodeinfo(const char *long_name,
                                  const char *short_name,
                                  uint32_t packet_id,
                                  uint8_t *out, size_t out_max);
+
+// Try to decode an incoming raw frame as a Meshtastic NodeInfo
+// announcement (portnum=4, User protobuf). Extracts long_name and
+// short_name into caller buffers (both NUL-terminated on success).
+// `from_node_out` is optional. Returns true iff the frame decrypts on
+// the LongFast channel and contains a valid User payload with at
+// least one of the two name fields present.
+bool meshtastic_parse_nodeinfo(const uint8_t *in, size_t in_len,
+                               char *long_name_out, size_t long_max,
+                               char *short_name_out, size_t short_max,
+                               uint32_t *from_node_out);

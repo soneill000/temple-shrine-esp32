@@ -293,6 +293,107 @@ static size_t encode_data_text(const char *text, uint8_t *out, size_t out_max)
     return n;
 }
 
+// Walk a Data protobuf and pull out `portnum` (field 1) + the raw
+// payload bytes of `payload` (field 2). Returns true if both fields
+// were seen. `payload_out` is a pointer INTO `in` (no copy), so it's
+// only valid while `in` lives.
+static bool decode_data_payload(const uint8_t *in, size_t in_len,
+                                uint32_t *portnum_out,
+                                const uint8_t **payload_out,
+                                size_t *payload_len_out)
+{
+    size_t i = 0;
+    bool have_portnum = false;
+    bool have_payload = false;
+    while (i < in_len) {
+        uint8_t tag = in[i++];
+        uint8_t field = tag >> 3;
+        uint8_t wire  = tag & 0x07;
+        if (field == 1 && wire == 0) {
+            uint32_t v;
+            size_t k = varint_read(&in[i], in_len - i, &v);
+            if (!k) return false;
+            i += k;
+            if (portnum_out) *portnum_out = v;
+            have_portnum = true;
+        } else if (field == 2 && wire == 2) {
+            uint32_t plen;
+            size_t k = varint_read(&in[i], in_len - i, &plen);
+            if (!k || i + k + plen > in_len) return false;
+            i += k;
+            if (payload_out)     *payload_out = &in[i];
+            if (payload_len_out) *payload_len_out = plen;
+            i += plen;
+            have_payload = true;
+        } else {
+            // Skip unknown field (same shape as decode_data_text)
+            if (wire == 0) {
+                uint32_t v;
+                size_t k = varint_read(&in[i], in_len - i, &v);
+                if (!k) return false;
+                i += k;
+            } else if (wire == 2) {
+                uint32_t plen;
+                size_t k = varint_read(&in[i], in_len - i, &plen);
+                if (!k || i + k + plen > in_len) return false;
+                i += k + plen;
+            } else if (wire == 5) { if (i + 4 > in_len) return false; i += 4; }
+            else if (wire == 1)   { if (i + 8 > in_len) return false; i += 8; }
+            else return false;
+        }
+    }
+    return have_portnum && have_payload;
+}
+
+// Extract long_name (User field 2) and short_name (User field 3) from
+// a User protobuf. Fills empty strings if a field is absent. Returns
+// true iff at least one of the two name fields was present.
+static bool decode_user_names(const uint8_t *in, size_t in_len,
+                              char *long_out, size_t long_max,
+                              char *short_out, size_t short_max)
+{
+    if (long_max)  long_out[0]  = 0;
+    if (short_max) short_out[0] = 0;
+    size_t i = 0;
+    bool have_any = false;
+    while (i < in_len) {
+        uint8_t tag = in[i++];
+        uint8_t field = tag >> 3;
+        uint8_t wire  = tag & 0x07;
+        if ((field == 2 || field == 3) && wire == 2) {
+            uint32_t slen;
+            size_t k = varint_read(&in[i], in_len - i, &slen);
+            if (!k || i + k + slen > in_len) return false;
+            i += k;
+            char *dst = (field == 2) ? long_out : short_out;
+            size_t dst_max = (field == 2) ? long_max : short_max;
+            if (dst && dst_max > 0) {
+                size_t copy = slen < dst_max - 1 ? slen : dst_max - 1;
+                memcpy(dst, &in[i], copy);
+                dst[copy] = 0;
+                have_any = true;
+            }
+            i += slen;
+        } else {
+            // Skip
+            if (wire == 0) {
+                uint32_t v;
+                size_t k = varint_read(&in[i], in_len - i, &v);
+                if (!k) return false;
+                i += k;
+            } else if (wire == 2) {
+                uint32_t plen;
+                size_t k = varint_read(&in[i], in_len - i, &plen);
+                if (!k || i + k + plen > in_len) return false;
+                i += k + plen;
+            } else if (wire == 5) { if (i + 4 > in_len) return false; i += 4; }
+            else if (wire == 1)   { if (i + 8 > in_len) return false; i += 8; }
+            else return false;
+        }
+    }
+    return have_any;
+}
+
 static bool decode_data_text(const uint8_t *in, size_t in_len,
                              char *out, size_t out_max)
 {
@@ -498,6 +599,45 @@ bool meshtastic_parse_text(const uint8_t *in, size_t in_len,
     aes_ctr_apply(DEFAULT_PSK, nonce, buf, payload_len);
 
     if (!decode_data_text(buf, payload_len, text_out, text_max)) return false;
+    if (from_node_out) *from_node_out = from;
+    return true;
+}
+
+bool meshtastic_parse_nodeinfo(const uint8_t *in, size_t in_len,
+                               char *long_name_out, size_t long_max,
+                               char *short_name_out, size_t short_max,
+                               uint32_t *from_node_out)
+{
+    if (!in || in_len < HDR_SIZE + 4) return false;
+    if (in[HDR_CHAN_OFF] != LONGFAST_CHANNEL_HASH) return false;
+
+    uint32_t packet_id = (uint32_t)in[HDR_ID_OFF+0]
+                       | ((uint32_t)in[HDR_ID_OFF+1] << 8)
+                       | ((uint32_t)in[HDR_ID_OFF+2] << 16)
+                       | ((uint32_t)in[HDR_ID_OFF+3] << 24);
+    uint32_t from = (uint32_t)in[HDR_FROM_OFF+0]
+                  | ((uint32_t)in[HDR_FROM_OFF+1] << 8)
+                  | ((uint32_t)in[HDR_FROM_OFF+2] << 16)
+                  | ((uint32_t)in[HDR_FROM_OFF+3] << 24);
+    size_t payload_len = in_len - HDR_SIZE;
+    if (payload_len > MESHTASTIC_MAX_FRAME) return false;
+
+    uint8_t buf[MESHTASTIC_MAX_FRAME];
+    memcpy(buf, in + HDR_SIZE, payload_len);
+
+    uint8_t nonce[16];
+    make_nonce(packet_id, from, nonce);
+    aes_ctr_apply(DEFAULT_PSK, nonce, buf, payload_len);
+
+    uint32_t portnum = 0;
+    const uint8_t *user_bytes = NULL;
+    size_t user_len = 0;
+    if (!decode_data_payload(buf, payload_len,
+                             &portnum, &user_bytes, &user_len)) return false;
+    if (portnum != PORTNUM_NODEINFO_APP) return false;
+    if (!decode_user_names(user_bytes, user_len,
+                           long_name_out, long_max,
+                           short_name_out, short_max)) return false;
     if (from_node_out) *from_node_out = from;
     return true;
 }

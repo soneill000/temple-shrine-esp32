@@ -290,13 +290,21 @@ typedef enum { UI_COMPOSE, UI_PICK, UI_PREVIEW, UI_INBOX, UI_SCAN } ui_mode_t;
 // Every time we hear ANY frame on air (regardless of whether we can
 // decrypt it), we record the source node ID + RSSI + channel hash.
 // Same node ID => update in place; LRU-evict when the table is full.
+// When we decrypt a NODEINFO frame from a node we also cache its
+// long_name and short_name so the inbox + scan UI can show a human
+// name instead of just the hex node ID.
 #define SCAN_NODES 16
+#define SCAN_LONG_MAX  20   // truncated for on-screen fit
+#define SCAN_SHORT_MAX  5   // Meshtastic short_name is 4 chars
 typedef struct {
     uint32_t node_id;
     int8_t   rssi;
     uint8_t  channel_hash;
     bool     on_our_channel;
     bool     saw_text;       // did we successfully decrypt a text msg from them?
+    bool     have_name;      // did we get a NodeInfo with names?
+    char     long_name[SCAN_LONG_MAX];
+    char     short_name[SCAN_SHORT_MAX];
     uint32_t last_seen_ms;
     uint32_t heard_count;
 } scan_node_t;
@@ -304,6 +312,55 @@ static scan_node_t s_nodes[SCAN_NODES];
 static int         s_node_count;
 static uint32_t    s_raw_packets;      // any RX at all (including undecodable garbage)
 static uint32_t    s_header_ok;        // header parsed as a valid Meshtastic frame
+
+// Find the scan_node_t slot for a given node ID, or NULL if unknown.
+// Used by the inbox formatter to substitute long/short names for the
+// hex node ID when a NodeInfo record has been received.
+static const scan_node_t *scan_lookup(uint32_t node_id)
+{
+    for (int i = 0; i < s_node_count; i++) {
+        if (s_nodes[i].node_id == node_id) return &s_nodes[i];
+    }
+    return NULL;
+}
+
+// Record a NodeInfo announcement into the scanner table. Creates a
+// slot if the node is new (matching scan_note_packet's LRU logic).
+static void scan_note_nodeinfo(uint32_t from,
+                               const char *long_name,
+                               const char *short_name)
+{
+    int slot = -1;
+    for (int i = 0; i < s_node_count; i++) {
+        if (s_nodes[i].node_id == from) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (s_node_count < SCAN_NODES) {
+            slot = s_node_count++;
+            memset(&s_nodes[slot], 0, sizeof(s_nodes[slot]));
+        } else {
+            uint32_t oldest = 0xFFFFFFFFu;
+            for (int i = 0; i < SCAN_NODES; i++) {
+                if (s_nodes[i].last_seen_ms < oldest) {
+                    oldest = s_nodes[i].last_seen_ms;
+                    slot = i;
+                }
+            }
+            memset(&s_nodes[slot], 0, sizeof(s_nodes[slot]));
+        }
+        s_nodes[slot].node_id = from;
+    }
+    if (long_name && long_name[0]) {
+        strncpy(s_nodes[slot].long_name, long_name, SCAN_LONG_MAX - 1);
+        s_nodes[slot].long_name[SCAN_LONG_MAX - 1] = 0;
+    }
+    if (short_name && short_name[0]) {
+        strncpy(s_nodes[slot].short_name, short_name, SCAN_SHORT_MAX - 1);
+        s_nodes[slot].short_name[SCAN_SHORT_MAX - 1] = 0;
+    }
+    s_nodes[slot].have_name = true;
+    s_nodes[slot].last_seen_ms = shrine_ms();
+}
 
 static void scan_note_packet(uint32_t from, uint8_t channel_hash,
                              int rssi, bool text_ok)
@@ -554,8 +611,10 @@ static void render_scan(void)
                          "if this stays 0, RX is broken",
                          C_DKGRAY, C_BG);
     } else {
-        // Column headers.
-        fb_puts(2, 5, "ID       RSSI  CH  AGE   MSGS", C_LTCYAN, C_BG);
+        // Column headers. If a node's NodeInfo has been received, its
+        // short name shows in the first column; otherwise the last 4
+        // hex digits of the node ID.
+        fb_puts(2, 5, "NODE  RSSI  CH  AGE   MSGS", C_LTCYAN, C_BG);
         uint32_t now = shrine_ms();
         // Show up to 12 rows; newest last-seen at top.
         // Simple selection sort by last_seen desc (small N).
@@ -572,13 +631,21 @@ static void render_scan(void)
         int show = s_node_count < 12 ? s_node_count : 12;
         for (int i = 0; i < show; i++) {
             const scan_node_t *n = &s_nodes[idx[i]];
-            char row[48];
+            char row[56];
+            char id_col[6];  // 4 chars + null + slop
+            if (n->have_name && n->short_name[0]) {
+                snprintf(id_col, sizeof(id_col), "%-4s", n->short_name);
+            } else {
+                // Last 4 hex digits of node ID.
+                snprintf(id_col, sizeof(id_col), "%04lx",
+                         (unsigned long)(n->node_id & 0xFFFFu));
+            }
             uint32_t age_s = (now - n->last_seen_ms) / 1000;
             if (age_s > 999) age_s = 999;
             char chan_tag = n->on_our_channel ? '*' : ' ';
             snprintf(row, sizeof(row),
-                     "%08lx %4d %02x%c %4lus %5lu",
-                     (unsigned long)n->node_id,
+                     "%s  %4d %02x%c %4lus %5lu",
+                     id_col,
                      (int)n->rssi,
                      n->channel_hash, chan_tag,
                      (unsigned long)age_s,
@@ -657,10 +724,22 @@ void game_lora_run(void)
                 bool text_ok = meshtastic_parse_text(buf, n, text,
                                                     sizeof(text), &from);
                 if (text_ok) {
-                    char line[220];
+                    // Prefer the sender's cached long/short name over
+                    // the hex node ID if we've seen their NodeInfo.
+                    const scan_node_t *sn = scan_lookup(from);
+                    char who[24];
+                    if (sn && sn->have_name && sn->long_name[0]) {
+                        snprintf(who, sizeof(who), "%.20s", sn->long_name);
+                    } else if (sn && sn->have_name && sn->short_name[0]) {
+                        snprintf(who, sizeof(who), "%.4s", sn->short_name);
+                    } else {
+                        snprintf(who, sizeof(who), "%08lx",
+                                 (unsigned long)from);
+                    }
+                    char line[240];
                     snprintf(line, sizeof(line),
-                             "[R%d %08lx] %.140s",
-                             rssi, (unsigned long)from, text);
+                             "[R%d %s] %.140s",
+                             rssi, who, text);
                     inbox_push(line);
                     // Skip the popup + fanfare when the "received"
                     // message is actually our own transmission looped
@@ -669,6 +748,21 @@ void game_lora_run(void)
                     // inbox history for audit.
                     if (from != meshtastic_my_node_id()) {
                         trigger_rx_flash(from, text);
+                    }
+                }
+                // Also try to decode as NODEINFO — every announcement
+                // we successfully decrypt adds/updates a name record so
+                // future text messages from this sender show their
+                // human name instead of hex.
+                {
+                    char ln[SCAN_LONG_MAX];
+                    char sn[SCAN_SHORT_MAX];
+                    uint32_t ni_from = 0;
+                    if (meshtastic_parse_nodeinfo(buf, n,
+                                                  ln, sizeof(ln),
+                                                  sn, sizeof(sn),
+                                                  &ni_from)) {
+                        scan_note_nodeinfo(ni_from, ln, sn);
                     }
                 }
                 if (header_ok) {
