@@ -8,6 +8,7 @@
 #include "font8x8.h"
 #include "audio.h"
 #include "hymns.h"
+#include "songs.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -47,6 +48,23 @@ static const hymn_t HYMNS[] = {
     { "ENTER SANDMAN",    "METALLICA (1991) - TERRY'S PICK",
       HYMN_ENTER_SANDMAN,
       sizeof(HYMN_ENTER_SANDMAN)/sizeof(HYMN_ENTER_SANDMAN[0]) },
+    // --- Terry Davis Psalmody (canewsin/templeos-1/psalmody/examples) ---
+    { "BATTLE HYMN SOLO",  "TERRY DAVIS - PSALMODY",
+      SONG_BATTLEHYMNSOLO,      SONG_BATTLEHYMNSOLO_COUNT },
+    { "HOPE",              "TERRY DAVIS - PSALMODY",
+      SONG_HOPE,                SONG_HOPE_COUNT },
+    { "WORSHIP",           "TERRY DAVIS - PSALMODY",
+      SONG_WORSHIP,             SONG_WORSHIP_COUNT },
+    { "WISDOM",            "TERRY DAVIS - PSALMODY",
+      SONG_WISDOM,              SONG_WISDOM_COUNT },
+    { "PSALM",             "TERRY DAVIS - PSALMODY",
+      SONG_PSALM,               SONG_PSALM_COUNT },
+    { "VERSES",            "TERRY DAVIS - PSALMODY",
+      SONG_VERSES,              SONG_VERSES_COUNT },
+    { "FIRST",             "TERRY DAVIS - PSALMODY",
+      SONG_FIRST,               SONG_FIRST_COUNT },
+    { "ELIJAH",            "TERRY DAVIS - PSALMODY",
+      SONG_ELIJAH,              SONG_ELIJAH_COUNT },
 };
 #define N_HYMNS (int)(sizeof(HYMNS)/sizeof(HYMNS[0]))
 
