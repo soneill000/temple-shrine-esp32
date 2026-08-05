@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flash TempleShrine</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 640px;
+      margin: 3em auto;
+      padding: 0 1em;
+      color: #eee;
+      background: #111;
+    }
+    h1 { color: #ffe066; margin-bottom: 0; }
+    .sub { color: #7fc7ff; margin-top: 0.25em; margin-bottom: 2em; }
+    .note { color: #aaa; font-size: 0.9em; margin-top: 2em; }
+    esp-web-install-button::part(button) {
+      background: #ffe066;
+      color: #111;
+      font-weight: bold;
+      padding: 0.75em 1.5em;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 1em;
+    }
+    esp-web-install-button::part(button):hover {
+      background: #fff099;
+    }
+    a { color: #7fc7ff; }
+  </style>
+</head>
+<body>
+  <h1>T E M P L E S H R I N E</h1>
+  <p class="sub">flash the badge — no CLI needed</p>
+
+  <p>Plug your 2026 DEF CON badge into a USB port, then click the button below.
+  Your browser (Chrome, Edge, or Opera on desktop) will prompt you to pick the
+  serial port and take it from there.</p>
+
+  <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+
+  <p class="note">
+    <strong>If the flash button won't connect:</strong> hold the <code>BOOT</code>
+    button on the badge, tap <code>RESET</code>, release <code>BOOT</code>, and try again.
+    This forces the ROM bootloader.
+  </p>
+
+  <p class="note">
+    <strong>Prefer the command line?</strong> Download the individual bin files from
+    the <a href="https://github.com/soneill000/temple-shrine-esp32/releases/latest">latest release</a>
+    and use <code>esptool.py</code>.
+  </p>
+
+  <p class="note">
+    Source, license, and full docs:
+    <a href="https://github.com/soneill000/temple-shrine-esp32">github.com/soneill000/temple-shrine-esp32</a>
+  </p>
+
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+</body>
+</html>

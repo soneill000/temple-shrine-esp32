@@ -4,7 +4,23 @@ First public release of TempleShrine — a TempleOS-flavored launcher, game coll
 
 ## Flashing
 
-Download all three `.bin` files from this release and flash with esptool:
+Three ways to flash, easiest first.
+
+### 1. Web flasher (recommended)
+
+Open **https://soneill000.github.io/temple-shrine-esp32/** in Chrome, Edge, or Opera on desktop, plug in the badge, click the flash button, and pick the serial port. That's it.
+
+### 2. Single merged binary (esptool, one file)
+
+Download `firmware-merged.bin` from this release and flash at offset 0:
+
+```bash
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash 0x0 firmware-merged.bin
+```
+
+### 3. Three-file layout (esptool, if you already have partial builds)
+
+If you want to flash just the app without touching the bootloader / partition table (rare — usually you want option 2):
 
 ```bash
 esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash \
@@ -42,6 +58,7 @@ The badge broadcasts as a proper Meshtastic node named `TempleShrine` (short: `T
 SHA-256 checksums:
 
 ```
+434320e64794447eb1ebf2135e89eb8d3624e4e7d3c97ae72e48b54288119e96  firmware-merged.bin
 cdea9b22637dfcf81e304c1a2f595c5b0428c463ccaf00e1a6fa8b56360f16b8  bootloader.bin
 7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820  partitions.bin
 bc53ccaef1e3892828478d7961b6899a697bb6bbe561bdecd8782f7eb6688424  firmware.bin
@@ -52,7 +69,6 @@ bc53ccaef1e3892828478d7961b6899a697bb6bbe561bdecd8782f7eb6688424  firmware.bin
 - Attract / idle mode for badge-on-a-table demo use (auto-cycles Chronicle pages after ~30 s of no input)
 - NVS persistence for game high scores (BomberGolf, EagleDive, BugBird)
 - Adventure port (blocked on TempleOS ISO extraction)
-- Merged single-bin flashing (bootloader + partitions + firmware fused into one file)
 - Serial log of LoRa TX/RX for laptop-side debugging
 
 ## Credits
