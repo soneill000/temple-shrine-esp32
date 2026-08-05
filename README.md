@@ -1,149 +1,150 @@
 # TempleShrine
 
-A TempleOS-flavored launcher and small game collection for the [Retia 2024 DEF CON badge](https://github.com/RetiaLLC/DefconBadge2026). Made in memory of Terry A. Davis (1969–2018).
+A TempleOS-flavored launcher, game collection, and Meshtastic radio broadcaster for the [2026 DEF CON badge](https://github.com/RetiaLLC/DefconBadge2026). Made in memory of Terry A. Davis (1969–2018).
 
-Runs on the badge (ESP32-S3 + ILI9341 + piezo + d-pad) and, via an SDL2 harness, on your desktop.
+Runs on the badge (ESP32-S3 + ILI9341 + RFM95W LoRa + piezo + d-pad) and, via an SDL2 harness, on your desktop.
 
 > **Everything Terry shipped as TempleOS is public domain** — he dedicated the whole OS, HolyC compiler, games, hymns, and sprite art to the public domain. This project builds on that gift.
 
-## Features
+## What's on the badge
 
-- **PersonalMenu-style launcher** with scrolling GodWord ticker
-- **Splash screen** in TempleOS Welcome.DD style, warm palette + bat sprites
-- **16-color VGA palette** and **8×8 CGA-style font** — the whole shrine paints in the visual language of TempleOS
+- **PersonalMenu-style launcher** with a scrolling GodWord ticker
+- **Splash screen** in TempleOS `Welcome.DD` style, warm palette + Terry's own sprites
+- **16-color VGA palette** + **8×8 CGA-style font** throughout — the whole shrine paints in TempleOS visual language
+- **HOLYMESH** — real Meshtastic v2 broadcaster/receiver on the US LongFast primary channel (906.875 MHz, SF11, BW=250, CR=4/5). Compatible with any Meshtastic phone or device in range: they see the badge as a `TempleShrine`/`TMPL` node and can send/receive text messages with it.
 
-**Real Terry ports (translated from `.HC` in TempleOS)**
-| App | Notes |
+### Scenes
+
+| Scene | What it is |
 |---|---|
-| Oracle | Terry's F7 GodWord + Shift-F7 BiblePassage |
-| Digits | Simon-Says-alike with rainbow color code |
-| BomberGolf | Top-down bomber. Physics + lead-time targeting match Terry's |
-| Squirt | Fountain toy. Hand-rolled mass-spring in place of his ODE solver |
-| RainDrops | Particle fall through a light-red frame, gates open with A/B |
-| FlapBat | Bat + gravity + 32 bugs. Uses Terry's actual bat sprite (extracted) |
-| Talons | Tier-2 tribute — Comanche-style voxel terrain because his polygon 3D pipeline is out of scope for the badge |
-| Hymn player | 7 public-domain hymns transcribed for the piezo |
-| Chronicle | Multi-page DolDoc-style reader with Terry / TempleOS lore |
-
-**Original TempleOS-flavored games (mine, not ports)**
-| App | Notes |
-|---|---|
-| Whap | Whack-a-mole, smite demons, spare angels |
-| Slider | 15-puzzle sliding tiles |
-| TicTacToe | Player vs a heuristic AI |
+| **AFTER EGYPT** | Full port of Terry's `AfterEgypt.HC` — GodTalking, Water Rock, Battle, Break Camp, Beg for Meat (Quail), Mt Horeb ascent + 2.5D wilderness wander with the Burning Bush |
+| **EAGLE DIVE** | Terry's `EagleDive` — voxel raycaster over his heightmap with fish spawning + on-demand eagle-talons swoop overlay |
+| **HOLYMESH** | Meshtastic LoRa: random-GodWord compose mode, Terry-aphorism broadcast mode, inbox with named senders, live node scanner. Auto-announces via `NODEINFO_APP` every 120 s |
+| **ORACLE** | Terry's F7 `GodWord` and Shift-F7 `GodBiblePassage` |
+| **HYMN** | 17 songs on the piezo: 7 public-domain hymns, "Paranoid" + "Enter Sandman" (Terry's picks), and 8 of Terry's own Psalmody compositions parsed straight from `canewsin/templeos-1` |
+| **SCRIPTURE** | KJV reader in DolDoc blue/white style — book index → passage view |
+| **HOLYC SHELL** | Fake TempleOS terminal (CRT scanlines + monitor flash effect), curated command palette: `God;`, `AdamBomb;`, `PopUpOk`, `Type("Bible.TXT")` — `God;` fires a live GodWord |
+| **CHRONICLE** | 9-page DolDoc reader: Terry biography, TempleOS, HolyC, the Third Temple, full "On Reality" bird-and-monitor quote, memorial |
+| **DIGITS** | Terry's `Digits` — Simon-Says with rainbow color code |
+| **BOMBERGOLF** | Terry's top-down bomber using his own 7 real sprites |
+| **SQUIRT** | Terry's fountain physics toy, hand-rolled mass-spring in place of his ODE solver |
+| **BUGBIRD** | Terry's `bugbird.cpp.z` — bird flapping through 32 bugs, using his own 4 vector sprites |
 
 ## Controls
 
 | Button | Purpose |
 |---|---|
-| D-pad | Navigate / play |
+| D-pad | Navigate / play (scene-specific) |
 | A | Confirm / primary action |
-| B | Secondary action (context-dependent; mutes music on the title screen) |
-| BOOT (silkscreened `GPIO_0`) | Advance / exit game back to launcher |
+| B | Secondary action (mute toggle on the launcher) |
+| BOOT (silkscreened `GPIO_0`) | Exit scene back to launcher |
 
-## Build & flash the badge
+## Flashing a pre-built binary
 
-Requires [PlatformIO](https://platformio.org/); ESP-IDF and the toolchain download automatically on first build (5–10 minutes). Subsequent builds are ~30 seconds.
+Download the three `.bin` files from the [latest release](https://github.com/soneill000/temple-shrine-esp32/releases/latest) and flash with esptool:
+
+```bash
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash \
+    0x0000  bootloader.bin \
+    0x8000  partitions.bin \
+    0x10000 firmware.bin
+```
+
+On Windows use `COM3` (or whatever `esptool.py chip_id` reports). If flashing fails with "Failed to connect," hold **BOOT (`GPIO_0`)**, tap **RESET**, release **BOOT** to force the ROM bootloader, then re-run esptool.
+
+## Building from source
+
+Requires [PlatformIO](https://platformio.org/). ESP-IDF and the toolchain download automatically on first build (5–10 min). Subsequent builds are ~30 s.
 
 ```bash
 git clone https://github.com/soneill000/temple-shrine-esp32.git
 cd temple-shrine-esp32
-pio run -j 1                                     # build (use -j 1 to avoid OOM on some Windows setups)
-pio run -j 1 -t upload --upload-port COM3        # flash (Windows)
-pio run -j 1 -t upload --upload-port /dev/ttyACM0   # flash (Linux)
+pio run -j 1                                        # build (-j 1 avoids OOM on some setups)
+pio run -j 1 -t upload --upload-port COM3           # flash (Windows)
+pio run -j 1 -t upload --upload-port /dev/ttyACM0   # flash (Linux/macOS)
 ```
 
-If upload fails with "Failed to connect": hold **BOOT (`GPIO_0`)**, tap **RESET**, release **BOOT** to force the ROM bootloader, wait ~2 seconds for USB re-enumeration (the COM port may change), and retry.
+## HOLYMESH: what it actually does on air
+
+HOLYMESH transmits real Meshtastic v2 mesh packets — not a proprietary format. Any Meshtastic device in range on the primary channel will see the badge appear in its Nodes list as `TempleShrine` (short name `TMPL`) and receive/relay text broadcasts from it.
+
+Under the hood:
+- 16-byte Meshtastic on-air header (to, from, id, flags, channel_hash=0x08, next_hop, relay_node)
+- Payload is `Data { portnum = TEXT_MESSAGE_APP, payload = <text>, want_response = false }`
+- Encrypted with AES-128-CTR using the default LongFast PSK; nonce layout matches Meshtastic's `CryptoEngine::initNonce` byte-for-byte (`packet_id` at bytes 0–7 as `uint64_t` LE, `from_node` at bytes 8–11 as `uint32_t` LE)
+- AES-128 is embedded from a public-domain reference impl (no `mbedtls` dependency)
+- On entry the badge broadcasts a `NODEINFO_APP` frame with `long_name="TempleShrine"`, `short_name="TMPL"`, `hw_model=PRIVATE_HW` so Meshtastic clients get a User record and don't hide our text as "unknown sender"
+- Node ID derived from the ESP-S3 factory MAC (lower 32 bits, Meshtastic convention)
+
+Compose mode auto-generates a random 3–6 GodWord sequence with a `GOD SAYS:` prefix. Browse mode cycles ten verified verbatim Terry quotes ([full list in `PHRASES.md`](PHRASES.md)). Scan mode shows a live table of every Meshtastic node the badge has heard, with RSSI, channel hash, decrypted name, and "on our channel" indicator.
 
 ## Run on desktop (SDL2 harness)
 
-Iterating on graphics on the badge alone is brutal. Every game builds and runs identically against SDL2 on Linux, macOS, or Windows.
+Every scene runs identically on Linux/macOS/Windows via SDL2 (no radio hardware, but everything else works).
 
 ```bash
 # Install SDL2 first:
-#   Linux:  sudo apt install libsdl2-dev cmake
-#   macOS:  brew install sdl2 cmake
-#   Windows: vcpkg install sdl2:x64-windows (then use -DCMAKE_TOOLCHAIN_FILE=...)
-
+#   Linux:   sudo apt install libsdl2-dev cmake
+#   macOS:   brew install sdl2 cmake
+#   Windows: vcpkg install sdl2:x64-windows
 cd src/harness
 cmake -B build
 cmake --build build
-./build/templeshrine       # or build\Debug\templeshrine.exe on Windows
+./build/templeshrine
 ```
 
-**Desktop key mapping:** arrows → d-pad, Z → A, X → B, Enter/Space/Esc → BOOT, Q → quit the harness.
+**Desktop key mapping:** arrows → d-pad, Z → A, X → B, Enter/Space/Esc → BOOT, Q → quit.
 
-The SDL harness has a working square-wave synth (hymns play, beeps play). Timing is close to the badge but the desktop is faster at pixel writes; things that feel crisp on your laptop may be borderline on hardware.
+## Faithfulness policy
 
-## Sprite decoder
+Ports labeled as Terry's work are exactly that — either direct HolyC → C translations line-by-line, or scenes rendered using his extracted sprites and mechanics.
 
-Terry's sprites live inside `.HC` source files as DolDoc binary payloads. A working Python extractor for **bitmap** sprites is in [`tools/extract_sprites.py`](tools/extract_sprites.py). Run it against a `.HC` file to emit a C header of palette-indexed pixel arrays:
-
-```bash
-py tools/extract_sprites.py path/to/Game.HC > game_sprites.h
-```
-
-The **vector CSprite** format (`SPT_LINE`, `SPT_POLYGON`, `SPT_FLOOD_FILL`, etc.) is not yet decoded — that's the next infrastructure jump. See [`src/harness/SPRITE_NOTES.md`](src/harness/SPRITE_NOTES.md) for the plan and the opcode table in [`src/sprite_decoder.h`](src/sprite_decoder.h).
+- **Sprites** live inside `.HC` files as DolDoc binary payloads. `tools/extract_sprite_tail.py` (and the aiwnios variant) extract them into C headers ready to feed into the `templeshim` `Sprite3()` API.
+- **Terry quotes** in `terry_quotes.h` are verbatim-only. Vetted sources: Terry's own vlog notes (user-supplied), Wikiquote's transcribed lines, TempleOS docs. Composed / speculative "Terry-style" phrasings were removed early in the project.
+- **HolyC scene logic** is ported line-for-line where Terry's original is knowable, preserving his exact constants (`HACK_PERIOD=0.25`, `DOWN_TIME=0.075`, palette indices, y-anchor offsets). Where the original is not knowable (comic panel art, splash art if the `.DD.Z` files can't be extracted), the code is annotated inline as homage.
+- **Music** — Terry's Psalmody songs are parsed straight from `canewsin/templeos-1/iso/apps/psalmody/examples/*.cpp.z` via `tools/parse_terry_play.py`, which reads his `Play()` notation and emits `note_t[]` arrays transposed +2 octaves for the badge piezo's audible band.
 
 ## Architecture
 
 ```
 src/
-├── main.c              ESP-IDF entry: init + splash → menu loop
-├── hw.h                Screen geometry (universal) + pin map (#ifdef ESP_PLATFORM)
-├── palette.h           16-color CGA/VGA palette in RGB565
-├── font8x8.h           8×8 CGA-style font, ASCII + custom TempleOS-style glyphs
-├── display.h/.c        ILI9341 SPI driver
-├── input.h/.c          7-button reader with debounce + edge detection
-├── audio.h/.c          LEDC piezo driver + background song task
-├── shrine.h/.c         The TempleOS-flavored shim every game draws through
-├── splash.c            Welcome.DD-alike splash
-├── menu.c              PersonalMenu-alike launcher + GodWord ticker
-├── vocab.h             ~300 curated KJV words for the Oracle + ticker
-├── hymns.h             7 public-domain hymn melodies
-├── sprite_decoder.h    Sprite opcode table + API for the (future) full decoder
-├── flapbat_sprites.h   Extracted bitmap sprites (generated)
-├── game_*.c            One file per game
-└── harness/            SDL2 desktop backend + build system
-    ├── display_sdl.c, input_sdl.c, audio_sdl.c, main_sdl.c
-    ├── CMakeLists.txt
-    ├── README.md
-    └── SPRITE_NOTES.md
+├── main.c                 ESP-IDF entry: init + splash → menu loop
+├── hw.h                   Screen geometry (universal) + pin map (ESP-only)
+├── palette.h              16-color CGA/VGA palette in RGB565
+├── font8x8.h              8×8 CGA-style font
+├── display.h/.c           ILI9341 SPI driver
+├── input.h/.c             7-button reader with debounce + edge detection
+├── audio.h/.c             LEDC piezo driver + background song task
+├── shrine.h/.c            The TempleOS-flavored shim every scene draws through
+├── templeshim.h/.c        Terry's Gr* API (GrLine, Sprite3, ...) on our fb
+├── scene_fb.h             Shared 320×240 PSRAM framebuffer for scene composition
+├── splash.c               Welcome.DD-alike splash
+├── menu.c                 Launcher + GodWord ticker
+├── vocab.h                ~300 curated KJV words for Oracle + compose
+├── terry_quotes.h         10 verbatim Terry quotes for HOLYMESH browse mode
+├── hymns.h                7 public-domain hymns + 2 Terry picks
+├── songs.h                8 Terry Psalmody songs (auto-gen by parse_terry_play.py)
+├── lora_radio.h/.c        SX1276 driver, Meshtastic-compatible init
+├── meshtastic_frame.h/.c  Meshtastic v2 frame builder/parser + embedded AES-128
+├── sprite_*.h             Extracted Terry sprites (BugBird, BomberGolf, Camp, ...)
+├── game_*.c               One file per scene
+└── harness/               SDL2 desktop backend
 
 tools/
-├── extract_sprites.py  Bitmap-sprite extractor for .HC files
-├── FlapBat.HC          Cached source, used by the extractor
-└── flapbat_sprites.h   Generated output
+├── extract_sprite_tail.py         Terry-format sprite tail extractor
+├── extract_sprite_tail_aiwnios.py Aiwnios-format variant
+├── parse_terry_play.py            Terry Play() notation → C note_t[]
+├── AfterEgypt/                    Vendored HolyC source for scene ports
+├── vendored/                      Vendored sprite sources
+└── psalmody/                      Vendored Terry Psalmody song files
 ```
-
-## Cross-platform shim
-
-All game code sits above `shrine.h`. `shrine.c` and `hw.h` use `#ifdef ESP_PLATFORM` to select the platform layer at compile time. The two builds share `src/*.c`; only the display/input/audio/main files differ per target.
-
-- **ESP build**: PlatformIO ESP-IDF pulls `src/*.c` non-recursively (harness is skipped)
-- **SDL build**: `src/harness/CMakeLists.txt` globs `../*.c`, filters out the four ESP-only files by name, adds `harness/*.c`
-
-## Notes on faithfulness
-
-- **Digits, Oracle, RainDrops** are near-literal translations of Terry's code
-- **BomberGolf, Squirt, FlapBat** faithfully port the game logic, with procedural or partially-extracted art
-- **Talons** is a Tier-2 tribute — Terry's original is a polygon-3D flight sim with a depth buffer; ours is a voxel raycaster over a sum-of-sines heightmap. Same feel, entirely different pipeline
-- **Whap, Slider, TicTacToe** are my originals in Terry's visual language, not translations
-
-Where a game is a real port, it says so in the launcher (`… (TERRY PORT)`).
-
-## Perf notes
-
-- Each shim primitive (`shrine_fill_rect`, `shrine_puts`, `shrine_pixel`) is one SPI transaction. Games that draw thousands of primitives per frame lag on the badge.
-- **Talons** avoids this by composing the whole frame in a PSRAM framebuffer and pushing it in one `display_present_full` call.
-- **FlapBat** batches its bat sprite blit similarly.
-- The other games use per-primitive drawing and are fine at their target frame rates but not optimized. The "why DOOM is fast and mine isn't" answer: DOOM's port composes into a framebuffer and never issues per-primitive calls.
 
 ## Credits
 
 - **TempleOS**, HolyC, the games, the hymns, and the sprite art: **Terry A. Davis (1969–2018)** — all dedicated to the public domain.
-- **Board pinout, board definition, and PlatformIO template**: [Retia LLC](https://retia.io/), from the [DefconBadge2026 repo](https://github.com/RetiaLLC/DefconBadge2026).
-- **Sprite reference**: [Xe/TempleOS](https://github.com/Xe/TempleOS) — mirror of Terry's source used for reference and extraction.
+- **Board pinout, board definition, PlatformIO template**: [Retia LLC](https://retia.io/), from the [DefconBadge2026 repo](https://github.com/RetiaLLC/DefconBadge2026).
+- **Sprite / source reference**: [canewsin/templeos-1](https://github.com/Canewsin/templeos-1) — mirror of Terry's source used for extraction of BugBird, BomberGolf, EagleDive, AESplash, Camp, Mountain, GodTalking, HorebA, Quail, WaterRock sprites and all 8 Psalmody songs.
+- **Meshtastic protocol**: reverse-engineered from the [Meshtastic firmware source](https://github.com/meshtastic/firmware) (`CryptoEngine.cpp`, `RadioLibInterface.cpp`, `RF95Interface.cpp`) and [RadioLib SX127x driver](https://github.com/jgromes/RadioLib) — no code copied, only protocol constants and register-write sequences studied.
 
 Released under the [MIT License](LICENSE).
 
