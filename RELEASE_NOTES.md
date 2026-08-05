@@ -49,10 +49,11 @@ bc53ccaef1e3892828478d7961b6899a697bb6bbe561bdecd8782f7eb6688424  firmware.bin
 
 ## What's next (post-demo)
 
-- Named-node lookup in HOLYMESH inbox (received `NodeInfo` frames cache long-names so text messages show `[R-62 SarahsPhone] hi` instead of `[R-62 0a1b2c3d] hi`)
-- NVS persistence for game high scores
+- Attract / idle mode for badge-on-a-table demo use (auto-cycles Chronicle pages after ~30 s of no input)
+- NVS persistence for game high scores (BomberGolf, EagleDive, BugBird)
 - Adventure port (blocked on TempleOS ISO extraction)
-- Attract / idle mode for badge-on-a-table demo use
+- Merged single-bin flashing (bootloader + partitions + firmware fused into one file)
+- Serial log of LoRa TX/RX for laptop-side debugging
 
 ## Credits
 
